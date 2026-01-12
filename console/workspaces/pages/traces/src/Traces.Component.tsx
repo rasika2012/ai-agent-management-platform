@@ -37,7 +37,7 @@ import {
   Select,
   Skeleton,
   Stack,
-} from "@mui/material";
+} from "@wso2/oxygen-ui";
 import {
   Clock,
   RefreshCcw,
@@ -58,6 +58,7 @@ const TIME_RANGE_OPTIONS = [
   { value: TraceListTimeRange.ONE_DAY, label: "1 Day" },
   { value: TraceListTimeRange.THREE_DAYS, label: "3 Days" },
   { value: TraceListTimeRange.SEVEN_DAYS, label: "7 Days" },
+  { value: TraceListTimeRange.THIRTY_DAYS, label: "30 Days" },
 ];
 
 export const TracesComponent: React.FC = () => {
@@ -125,7 +126,7 @@ export const TracesComponent: React.FC = () => {
       <PageLayout
         title="Traces"
         actions={
-          <Stack direction="row" gap={1}>
+          <Stack direction="row" gap={1} alignItems="center">
             {setTimeRange && (
               <Select
                 size="small"
@@ -173,6 +174,7 @@ export const TracesComponent: React.FC = () => {
                 <SortDesc size={16} />
               )}
             </IconButton>
+            {/* </Box> */}
           </Stack>
         }
         disableIcon

@@ -32,15 +32,15 @@ declare module 'vitest' {
 expect.extend(matchers);
 
 // Mock MUI theme for testing
-import { ThemeProvider } from '@mui/material/styles';
+import { OxygenUIThemeProvider } from '@wso2/oxygen-ui';
 import { aiAgentTheme } from './src/theme';
 
 export const testTheme = aiAgentTheme;
 
 export const TestWrapper = ({ children }: { children: React.ReactNode }) => (
-  <ThemeProvider theme={testTheme}>
+  <OxygenUIThemeProvider >
     {children}
-  </ThemeProvider>
+  </OxygenUIThemeProvider>
 );
 
 

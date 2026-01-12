@@ -48,6 +48,7 @@ const getTimeRangeLabel = (timeRange: TraceListTimeRange): string => {
     [TraceListTimeRange.ONE_DAY]: "1 Day",
     [TraceListTimeRange.THREE_DAYS]: "3 Days",
     [TraceListTimeRange.SEVEN_DAYS]: "7 Days",
+    [TraceListTimeRange.THIRTY_DAYS]: "30 Days",
   };
   return labels[timeRange] || "Unknown";
 };

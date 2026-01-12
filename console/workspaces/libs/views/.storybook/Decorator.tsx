@@ -21,25 +21,23 @@ import { Decorator } from '@storybook/react';
 import { useDarkMode } from 'storybook-dark-mode';
 import { BrowserRouter } from 'react-router-dom';
 import { IntlProvider } from 'react-intl';
-import { ThemeProvider } from '@mui/material/styles';
+import { OxygenUIThemeProvider } from '@wso2/oxygen-ui';
 import { CssBaseline } from '@mui/material';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import dayjs from 'dayjs';
-import { aiAgentTheme, aiAgentDarkTheme } from '../src/theme';
 
 dayjs.extend(relativeTime);
 
 export const withTheme: Decorator = (Story) => {
   const isDark = useDarkMode();
-  const theme = isDark ? aiAgentDarkTheme : aiAgentTheme;
 
   return (
     <BrowserRouter>
       <IntlProvider locale="en">
-        <ThemeProvider theme={theme}>
+        <OxygenUIThemeProvider >
           <CssBaseline />
           <Story />
-        </ThemeProvider>
+        </OxygenUIThemeProvider>
       </IntlProvider>
     </BrowserRouter>
   );
