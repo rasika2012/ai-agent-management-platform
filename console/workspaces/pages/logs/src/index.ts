@@ -20,13 +20,16 @@ import { LogsComponent } from './Logs.Component';
 import { Logs } from '@wso2/oxygen-ui-icons-react';
 
 export const metaData = {
-  title: 'Runtime Logs',
-  description: 'A page component for Logs',
-  icon: Logs,
-  path: '/logs',
-  component: LogsComponent,
-  levels: {
-    component: LogsComponent,
+  pages: {
+    component: {
+      logs: {
+        component: LogsComponent,
+        icon: Logs,
+        title: 'Runtime Logs',
+        description: 'A page component for Logs',
+        path: '/logs',
+      },
+    },
   },
 };
 

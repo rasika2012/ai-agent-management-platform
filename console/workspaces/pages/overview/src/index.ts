@@ -22,15 +22,34 @@ import { OverviewOrganization } from './Overview.Organization';
 import { Home } from '@wso2/oxygen-ui-icons-react';
 
 export const metaData = {
-  title: 'Overview',
-  description: 'A page component for Overview',
-  icon: Home,
-  path: '/overview',
-  component: OverviewComponent,
-  levels: {
-    component: OverviewComponent,
-    project: OverviewProject,
-    organization: OverviewOrganization,
+  pages: {
+    component: {
+      componentOverview: {
+        component: OverviewComponent,
+        icon: Home,
+        title: 'Overview',
+        description: 'A page component for Overview',
+        path: '/overview',
+      },
+    },
+    project: {
+      projectOverview: {
+        component: OverviewProject,
+        icon: Home,
+        title: 'Overview',
+        description: 'A page component for Overview',
+        path: '/overview',
+      },
+    },
+    organization: {
+      organizationOverview: {
+        component: OverviewOrganization,
+        icon: Home,
+        title: 'Overview',
+        description: 'A page component for Overview',
+        path: '/overview',
+      },
+    },
   },
 };
 

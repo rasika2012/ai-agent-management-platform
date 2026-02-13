@@ -41,9 +41,15 @@ import type { NavigationItem, NavigationSection } from "./LeftNavigation";
  * TODO: Use nav bar instead of navigate to the items.
  */
 
-export function useNavigationItems(): Array<
-  NavigationSection | NavigationItem
-> {
+const overviewComponentPage = overviewMetadata.pages.component.componentOverview;
+const buildComponentPage = buildMetadata.pages.component.build;
+const deploymentComponentPage = deploymentMetadata.pages.component.deploy;
+const testComponentPage = testMetadata.pages.component.test;
+const tracesComponentPage = tracesMetadata.pages.component.trace;
+const logsComponentPage = logsMetadata.pages.component.logs;
+const metricsComponentPage = metricsMetadata.pages.component.metrics;
+
+export function useNavigationItems(): Array<NavigationSection | NavigationItem> {
   const { orgId, projectId, agentId, envId } = useParams();
   const { data: agent, isLoading: isLoadingAgent } = useGetAgent({
     agentName: agentId,
@@ -69,9 +75,9 @@ export function useNavigationItems(): Array<
   ) {
     return [
       {
-        label: overviewMetadata.title,
+        label: overviewComponentPage.title,
         type: "item",
-        icon: <overviewMetadata.icon  size={20} />,
+        icon: <overviewComponentPage.icon size={20} />,
         isActive: !!matchPath(
           absoluteRouteMap.children.org.children.projects.children.agents.path,
           pathname
@@ -87,9 +93,9 @@ export function useNavigationItems(): Array<
         icon: <AutoGraphOutlined />,
         items: [
           {
-            label: tracesMetadata.title,
+            label: tracesComponentPage.title,
             type: "item",
-            icon: <tracesMetadata.icon  size={20} />,
+            icon: <tracesComponentPage.icon size={20} />,
             isActive: !!matchPath(
               absoluteRouteMap.children.org.children.projects.children.agents
                 .children.environment.children.observability.children.traces.wildPath,
@@ -109,9 +115,9 @@ export function useNavigationItems(): Array<
   if (orgId && projectId && agentId && defaultEnv) {
     return [
       {
-        label: overviewMetadata.title,
+        label: overviewComponentPage.title,
         type: "item",
-        icon: <overviewMetadata.icon  size={20} />,
+        icon: <overviewComponentPage.icon size={20} />,
         isActive: !!matchPath(
           absoluteRouteMap.children.org.children.projects.children.agents.path,
           pathname
@@ -122,9 +128,9 @@ export function useNavigationItems(): Array<
         ),
       },
       {
-        label: buildMetadata.title,
+        label: buildComponentPage.title,
         type: "item",
-        icon: <buildMetadata.icon  size={20} />,
+        icon: <buildComponentPage.icon size={20} />,
         isActive: !!matchPath(
           absoluteRouteMap.children.org.children.projects.children.agents
             .children.build.wildPath,
@@ -137,9 +143,9 @@ export function useNavigationItems(): Array<
         ),
       },
       {
-        label: deploymentMetadata.title,
+        label: deploymentComponentPage.title,
         type: "item",
-        icon: <deploymentMetadata.icon  size={20} />,
+        icon: <deploymentComponentPage.icon size={20} />,
         isActive: !!matchPath(
           absoluteRouteMap.children.org.children.projects.children.agents
             .children.deployment.wildPath,
@@ -152,9 +158,9 @@ export function useNavigationItems(): Array<
         ),
       },
       {
-        label: testMetadata.title,
+        label: testComponentPage.title,
         type: "item",
-        icon: <testMetadata.icon  size={20} />,
+        icon: <testComponentPage.icon size={20} />,
         isActive: !!matchPath(
           absoluteRouteMap.children.org.children.projects.children.agents
             .children.environment.children.tryOut.wildPath,
@@ -172,9 +178,9 @@ export function useNavigationItems(): Array<
         icon: <Binoculars  />,
         items: [
           {
-            label: tracesMetadata.title,
+            label: tracesComponentPage.title,
             type: "item",
-            icon: <tracesMetadata.icon  size={20} />,
+            icon: <tracesComponentPage.icon size={20} />,
             isActive: !!matchPath(
               absoluteRouteMap.children.org.children.projects.children.agents
                 .children.environment.children.observability.children.traces
@@ -189,9 +195,9 @@ export function useNavigationItems(): Array<
             ),
           },
           {
-            label: logsMetadata.title,
+            label: logsComponentPage.title,
             type: "item",
-            icon: <logsMetadata.icon  size={20} />,
+            icon: <logsComponentPage.icon size={20} />,
             isActive: !!matchPath(
               absoluteRouteMap.children.org.children.projects.children.agents
                 .children.environment.children.observability.children.logs
@@ -206,9 +212,9 @@ export function useNavigationItems(): Array<
             ),
           },
           {
-            label: metricsMetadata.title,
+            label: metricsComponentPage.title,
             type: "item",
-            icon: <metricsMetadata.icon  size={20} />,
+            icon: <metricsComponentPage.icon size={20} />,
             isActive: !!matchPath(
               absoluteRouteMap.children.org.children.projects.children.agents
                 .children.environment.children.observability.children.metrics
@@ -231,7 +237,7 @@ export function useNavigationItems(): Array<
       {
         label: "Agents",
         type: "item",
-        icon: <overviewMetadata.icon  size={20} />,
+        icon: <overviewComponentPage.icon size={20} />,
         href: generatePath(
           absoluteRouteMap.children.org.children.projects.path,
           { orgId, projectId }
@@ -254,7 +260,7 @@ export function useNavigationItems(): Array<
       {
         label: "Projects",
         type: "item",
-        icon: <overviewMetadata.icon  size={20} />,
+        icon: <overviewComponentPage.icon size={20} />,
         href: generatePath(absoluteRouteMap.children.org.path, { orgId }),
         isActive: !!matchPath(absoluteRouteMap.children.org.path, pathname),
       },

@@ -20,17 +20,22 @@ import { TracesComponent } from './Traces.Component';
 import { Workflow } from '@wso2/oxygen-ui-icons-react';
 
 export const metaData = {
-  title: 'Traces',
-  description: 'A page component for Traces',
-  icon: Workflow,
-  path: '/traces',
-  component: TracesComponent,
-  levels: {
-    component: TracesComponent,
-  },
+  pages: {
+    component: {
+      trace: {
+        component: TracesComponent,
+        icon: Workflow,
+        title: 'Traces',
+        description: 'A page component for Traces',
+        path: '/traces',
+      }
+    },
+    // project: { // Same},
+    // organization: { // Same},
+  }
 };
 
-export { 
+export {
   TracesComponent,
 };
 

@@ -21,11 +21,17 @@ import { FolderPlus as FolderPlusOutlined } from '@wso2/oxygen-ui-icons-react';
 import { absoluteRouteMap } from '@agent-management-platform/types';
 
 export const metaData = {
-  title: 'Add New Project',
-  description: 'A page component for Add New Project',
-  icon: FolderPlusOutlined,
-  path: absoluteRouteMap.children.org.children.newProject.path,
-  component: AddNewProject,
+  pages: {
+    component: {
+      addNewProject: {
+        component: AddNewProject,
+        icon: FolderPlusOutlined,
+        title: 'Add New Project',
+        description: 'A page component for Add New Project',
+        path: absoluteRouteMap.children.org.children.newProject.path,
+      },
+    },
+  },
 };
 
 export { AddNewProject };

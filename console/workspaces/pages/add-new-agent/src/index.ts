@@ -21,11 +21,17 @@ import { UserPlus as PersonAddOutlined } from '@wso2/oxygen-ui-icons-react';
 import { absoluteRouteMap } from '@agent-management-platform/types';
 
 export const metaData = {
-  title: 'Add New Agent',
-  description: 'A page component for Add New Agent',
-  icon: PersonAddOutlined,
-  path: absoluteRouteMap.children.org.children.projects.children.newAgent.path,
-  component: AddNewAgent,
+  pages: {
+    component: {
+      addNewAgent: {
+        component: AddNewAgent,
+        icon: PersonAddOutlined,
+        title: 'Add New Agent',
+        description: 'A page component for Add New Agent',
+        path: absoluteRouteMap.children.org.children.projects.children.newAgent.path,
+      },
+    },
+  },
 };
 
 export { AddNewAgent };

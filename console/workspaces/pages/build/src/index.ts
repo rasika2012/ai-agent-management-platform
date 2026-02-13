@@ -20,13 +20,16 @@ import { BuildComponent } from './Build.Component';
 import { Wrench as BuildOutlined } from '@wso2/oxygen-ui-icons-react';
 
 export const metaData = {
-  title: 'Build',
-  description: 'A page component for Build',
-  icon: BuildOutlined,
-  path: '/build',
-  component: BuildComponent,
-  levels: {
-    component: BuildComponent,
+  pages: {
+    component: {
+      build: {
+        component: BuildComponent,
+        icon: BuildOutlined,
+        title: 'Build',
+        description: 'A page component for Build',
+        path: '/build',
+      },
+    },
   },
 };
 
