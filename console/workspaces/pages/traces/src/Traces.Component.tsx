@@ -22,6 +22,9 @@ import {
   DrawerHeader,
   DrawerWrapper,
   PageLayout,
+  TIME_RANGE_OPTIONS,
+  TimeRange,
+  TimeRangePicker,
 } from "@agent-management-platform/views";
 import { useParams, useSearchParams } from "react-router-dom";
 import {
@@ -31,17 +34,7 @@ import {
   getTimeRange,
   globalConfig,
 } from "@agent-management-platform/types";
-// import {
-//   Snackbar,
-//   Alert,
-//   Button,
-//   CircularProgress,
-//   IconButton,
-//   InputAdornment,
-//   MenuItem,
-//   Select,
-//   Stack,
-// } from "@mui/material";
+
 import {
   Workflow,
   Clock,
@@ -61,31 +54,30 @@ import {
 import { TraceDetails, TracesView } from "./subComponents";
 import { Alert, Button, CircularProgress, IconButton, InputAdornment, MenuItem, Select, Snackbar, Stack, Typography } from "@wso2/oxygen-ui";
 
-const TIME_RANGE_OPTIONS = [
-  { value: TraceListTimeRange.TEN_MINUTES, label: "10 Minutes" },
-  { value: TraceListTimeRange.THIRTY_MINUTES, label: "30 Minutes" },
-  { value: TraceListTimeRange.ONE_HOUR, label: "1 Hour" },
-  { value: TraceListTimeRange.THREE_HOURS, label: "3 Hours" },
-  { value: TraceListTimeRange.SIX_HOURS, label: "6 Hours" },
-  { value: TraceListTimeRange.TWELVE_HOURS, label: "12 Hours" },
-  { value: TraceListTimeRange.ONE_DAY, label: "1 Day" },
-  { value: TraceListTimeRange.THREE_DAYS, label: "3 Days" },
-  { value: TraceListTimeRange.SEVEN_DAYS, label: "7 Days" },
-  { value: TraceListTimeRange.THIRTY_DAYS, label: "30 Days" },
-];
+// const TIME_RANGE_OPTIONS = [
+//   { value: TraceListTimeRange.TEN_MINUTES, label: "10 Minutes" },
+//   { value: TraceListTimeRange.THIRTY_MINUTES, label: "30 Minutes" },
+//   { value: TraceListTimeRange.ONE_HOUR, label: "1 Hour" },
+//   { value: TraceListTimeRange.THREE_HOURS, label: "3 Hours" },
+//   { value: TraceListTimeRange.SIX_HOURS, label: "6 Hours" },
+//   { value: TraceListTimeRange.TWELVE_HOURS, label: "12 Hours" },
+//   { value: TraceListTimeRange.ONE_DAY, label: "1 Day" },
+//   { value: TraceListTimeRange.THREE_DAYS, label: "3 Days" },
+//   { value: TraceListTimeRange.SEVEN_DAYS, label: "7 Days" },
+//   { value: TraceListTimeRange.THIRTY_DAYS, label: "30 Days" },
+// ];
 
 export const TracesComponent: React.FC = () => {
   const { agentId, orgId, projectId, envId } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
   const { mutateAsync: exportTracesAsync, isPending: isExporting } = useExportTraces();
-
+  const [timeRange, setTimeRange] = useState<TimeRange>(TraceListTimeRange.ONE_DAY);
   const {
     data: orgData,
     isPending: isOrgPending,
     isSuccess: isOrgSuccess,
   } = useGetOrganization({ orgName: orgId ?? "" });
   const namespace = orgData?.namespace;
-  
 
   const { data: agentData, isPending: isAgentPending, isSuccess: isAgentSuccess } = useGetAgent({
     orgName: orgId ?? "",
@@ -127,14 +119,14 @@ export const TracesComponent: React.FC = () => {
     return [startRaw, endRaw, true];
   }, [searchParams]);
 
-  const timeRange = useMemo(
-    () =>
-      hasCustomRange
-        ? undefined
-        : (searchParams.get("timeRange") as TraceListTimeRange) ||
-          TraceListTimeRange.SEVEN_DAYS,
-    [searchParams, hasCustomRange]
-  );
+  // const timeRange = useMemo(
+  //   () =>
+  //     hasCustomRange
+  //       ? undefined
+  //       : (searchParams.get("timeRange") as TraceListTimeRange) ||
+  //         TraceListTimeRange.SEVEN_DAYS,
+  //   [searchParams, hasCustomRange]
+  // );
 
   const limit = useMemo(
     () => parseInt(searchParams.get("limit") || "10", 10),
@@ -326,6 +318,13 @@ export const TracesComponent: React.FC = () => {
     [searchParams, setSearchParams],
   );
 
+  const handleCustomTimeRangeChange = useCallback(
+    (newTimeRange: TraceListTimeRange | { startTime: string; endTime: string }) => {
+      setTimeRange(newTimeRange);
+    },
+    [setTimeRange],
+  );
+
   const customRangeLabel = useMemo(() => {
     if (!hasCustomRange) return null;
     const fmt = (iso: string) =>
@@ -401,6 +400,14 @@ export const TracesComponent: React.FC = () => {
         actions={
           <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap">
             {/* Time Range Selector */}
+            <TimeRangePicker
+              timeRange={
+                hasCustomRange
+                  ? { startTime: customStartTime!, endTime: customEndTime! }
+                  : (timeRange ?? TraceListTimeRange.SEVEN_DAYS)
+              }
+              onChange={handleCustomTimeRangeChange}
+            />
             {hasCustomRange ? (
               <Stack direction="row" spacing={0.5} alignItems="center">
                 <Clock size={16} />
