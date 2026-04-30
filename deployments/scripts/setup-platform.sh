@@ -9,6 +9,7 @@ source "$SCRIPT_DIR/utils.sh"
 # Project root is two directories up from scripts
 PROJECT_ROOT="$SCRIPT_DIR/../.."
 COMPOSE_FILE="$SCRIPT_DIR/../docker-compose.yml"
+COMPOSE_CMD=""
 
 echo "=== Setting up Agent Manager Core Platform ==="
 
@@ -19,9 +20,14 @@ if ! docker info &> /dev/null; then
     exit 1
 fi
 
-if ! docker compose version &> /dev/null; then
+# Resolve compose command: prefer plugin (`docker compose`), fallback to standalone (`docker-compose`).
+if docker compose version &> /dev/null; then
+    COMPOSE_CMD="docker compose"
+elif command -v docker-compose &> /dev/null; then
+    COMPOSE_CMD="docker-compose"
+else
     echo "❌ Docker Compose is not installed or not available."
-    echo "   Please install Docker Compose plugin."
+    echo "   Install either Docker Compose plugin (docker compose) or standalone docker-compose."
     exit 1
 fi
 
@@ -77,7 +83,7 @@ echo "🚀 Starting Agent Manager platform services..."
 # Export console host path so docker-compose can align WORKDIR with the host,
 # preventing Rush temp-file / node_modules path mismatches.
 export CONSOLE_HOST_PATH="$(cd "$SCRIPT_DIR/../../console" && pwd)"
-docker compose -f "$COMPOSE_FILE" up -d
+$COMPOSE_CMD -f "$COMPOSE_FILE" up -d
 
 echo ""
 echo "⏳ Waiting for services to be healthy..."
@@ -89,7 +95,7 @@ sleep 5
 echo ""
 echo "3️⃣  Verify services"
 echo "📊 Service Status:"
-docker compose -f "$COMPOSE_FILE" ps
+$COMPOSE_CMD -f "$COMPOSE_FILE" ps
 
 echo ""
 echo "✅ Agent Manager platform is running!"
@@ -100,5 +106,5 @@ echo "   API:       http://localhost:9000"
 echo "   Database:  postgresql://agentmanager:agentmanager@localhost:5432/agentmanager"
 echo ""
 echo "📋 Useful commands:"
-echo "   View logs:      docker compose -f deployments/docker-compose.yml logs -f"
-echo "   Stop services:  docker compose -f deployments/docker-compose.yml down"
+echo "   View logs:      $COMPOSE_CMD -f deployments/docker-compose.yml logs -f"
+echo "   Stop services:  $COMPOSE_CMD -f deployments/docker-compose.yml down"

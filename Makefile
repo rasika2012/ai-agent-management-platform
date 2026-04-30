@@ -1,5 +1,11 @@
 .PHONY: help setup setup-colima setup-k3d setup-openchoreo setup-platform setup-console-local setup-console-local-force dev-up dev-down dev-restart dev-rebuild dev-logs dev-migrate openchoreo-up openchoreo-down openchoreo-status teardown db-connect db-logs service-logs service-shell console-logs port-forward gen-eval-artifacts
 
+COMPOSE_CMD := $(shell if docker compose version >/dev/null 2>&1; then echo "docker compose"; elif command -v docker-compose >/dev/null 2>&1; then echo "docker-compose"; fi)
+
+ifndef COMPOSE_CMD
+$(error Docker Compose is not available. Install docker compose plugin or docker-compose)
+endif
+
 # Default target
 help:
 	@echo "Agent Manager Platform - Development Commands"
@@ -107,38 +113,38 @@ setup-console-local-force:
 # Daily development commands
 dev-up: setup-console-local gen-keys
 	@echo "🚀 Starting Agent Manager platform..."
-	@cd deployments && docker compose up -d
+	@cd deployments && $(COMPOSE_CMD) up -d
 	@echo "✅ Platform is running!"
 	@echo "   Console: http://localhost:3000"
 	@echo "   API:     http://localhost:8080"
 
 dev-down:
 	@echo "🛑 Stopping Agent Manager platform..."
-	@cd deployments && docker compose down
+	@cd deployments && $(COMPOSE_CMD) down
 	@echo "✅ Platform stopped"
 
 dev-restart:
 	@echo "🔄 Restarting Agent Manager platform..."
-	@cd deployments && docker compose restart
+	@cd deployments && $(COMPOSE_CMD) restart
 	@echo "✅ Platform restarted"
 
 dev-rebuild: setup-console-local
 	@echo "🧹 Stopping services..."
-	@cd deployments && docker compose down
+	@cd deployments && $(COMPOSE_CMD) down
 	@echo "🧹 Removing console volumes (preserving database)..."
 	@docker volume rm deployments_console_node_modules deployments_console_common_temp 2>/dev/null || true
 	@echo "🧹 Cleaning Rush temp directory..."
 	@rm -rf console/common/temp
 	@echo "🔨 Rebuilding Docker images..."
-	@cd deployments && docker compose build --no-cache
+	@cd deployments && $(COMPOSE_CMD) build --no-cache
 	@echo "🔄 Starting services..."
-	@cd deployments && docker compose up -d
+	@cd deployments && $(COMPOSE_CMD) up -d
 	@echo "✅ Rebuild complete!"
 	@echo "   Console: http://localhost:3000"
 	@echo "   API:     http://localhost:8080"
 
 dev-logs:
-	@cd deployments && docker compose logs -f
+	@cd deployments && $(COMPOSE_CMD) logs -f
 
 dev-migrate:
 	@cd agent-manager-service && make dev-migrate
