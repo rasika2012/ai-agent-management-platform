@@ -2,6 +2,11 @@
 
 COMPOSE_CMD := $(shell if docker compose version >/dev/null 2>&1; then echo "docker compose"; elif command -v docker-compose >/dev/null 2>&1; then echo "docker-compose"; fi)
 
+# Absolute path to the console directory on the host. Passed to docker-compose
+# so the container mounts and builds at the same path, keeping rush/pnpm
+# symlinks valid on both the host and inside the container.
+export CONSOLE_HOST_PATH := $(realpath $(CURDIR)/console)
+
 ifndef COMPOSE_CMD
 $(error Docker Compose is not available. Install docker compose plugin or docker-compose)
 endif
