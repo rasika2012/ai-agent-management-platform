@@ -345,7 +345,7 @@
       "projectFolder": "workspaces/libs/types"
     },
     {
-      "packageName": "@agent-management-platform/core-ui",
+      "packageName": "@wso2/amp-core-ui",
       "projectFolder": "workspaces/core-ui"
     },
     {
