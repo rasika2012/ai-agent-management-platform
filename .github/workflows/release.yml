@@ -405,28 +405,18 @@ jobs:
     runs-on:
       - codebuild-wso2_agent-manager-${{ github.run_id }}-${{ github.run_attempt }}
     permissions:
-      contents: read
-    steps:
+      contents: read      packages: write    steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           ref: amp/v${{ inputs.target_version }}
 
-      - name: Setup Node.js for npm publish
+      - name: Setup Node.js for GitHub Package Registry
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          registry-url: https://registry.npmjs.org
-
-      - name: Ensure npm token is available
-        run: |
-          if [ -z "$NPM_TOKEN_WSO2" ]; then
-            echo "Error: NPM_TOKEN_WSO2 secret is not configured"
-            exit 1
-          fi
-        env:
-          NPM_TOKEN_WSO2: ${{ secrets.NPM_TOKEN_WSO2 }}
-        shell: bash
+          registry-url: https://npm.pkg.github.com
+          scope: "@wso2"
 
       - name: Install monorepo dependencies
         run: |
@@ -459,7 +449,7 @@ jobs:
           npm publish --access public --tag "$DIST_TAG"
         env:
           TARGET_RELEASE: ${{ inputs.target_version }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN_WSO2 }}
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
 
   create-release:
