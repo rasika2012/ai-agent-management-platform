@@ -1,67 +1,63 @@
 #!/bin/bash
 set -e
 
+# Get the absolute directory of this script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/env.sh"
+source "$SCRIPT_DIR/utils.sh"
+
 echo "=== Tearing Down Agent Manager Development Environment ==="
 
-# Stop Docker Compose services
-if [ -f "../docker-compose.yml" ]; then
+# ============================================================================
+# Step 1: Stop Docker Compose services
+# ============================================================================
+echo ""
+echo "1️⃣  Stop Docker Compose services"
+if [ -f "$SCRIPT_DIR/../docker-compose.yml" ]; then
     echo "🛑 Stopping Agent Manager platform services..."
-    cd ..
-    docker compose down -v
-    cd scripts
+    docker compose -f "$SCRIPT_DIR/../docker-compose.yml" down -v
     echo "✅ Platform services stopped"
 else
     echo "⚠️  docker-compose.yml not found, skipping platform teardown"
 fi
 
+# ============================================================================
+# Step 2: Delete K3d cluster
+# ============================================================================
 echo ""
-
-# Delete Kind cluster
-if command -v kind &> /dev/null; then
-    if kind get clusters 2>/dev/null | grep -q "^openchoreo-local$"; then
-        echo "🛑 Deleting Kind cluster 'openchoreo-local'..."
-        kind delete cluster --name openchoreo-local
-        echo "✅ Kind cluster deleted"
+echo "2️⃣  Delete K3d cluster"
+if command -v k3d &> /dev/null; then
+    if k3d cluster list 2>/dev/null | grep -q "$CLUSTER_NAME"; then
+        echo "🛑 Deleting K3d cluster '$CLUSTER_NAME'..."
+        k3d cluster delete "$CLUSTER_NAME"
+        echo "✅ K3d cluster deleted"
     else
-        echo "⚠️  Kind cluster 'openchoreo-local' not found"
+        echo "⚠️  K3d cluster '$CLUSTER_NAME' not found"
     fi
 else
-    echo "⚠️  Kind not installed, skipping cluster deletion"
+    echo "⚠️  K3d not installed, skipping cluster deletion"
+fi
+
+# ============================================================================
+# Step 3: Delete Colima dev profile
+# ============================================================================
+echo ""
+echo "3️⃣  Delete Colima dev profile"
+if command -v colima &> /dev/null; then
+    if colima list 2>/dev/null | grep -q "dev"; then
+        echo "🛑 Deleting Colima dev profile..."
+        colima stop dev 2>/dev/null || true
+        colima delete dev --force 2>/dev/null || true
+        echo "✅ Colima dev profile deleted"
+    else
+        echo "⏭️  Colima dev profile not found, skipping"
+    fi
+else
+    echo "⏭️  Colima not installed, skipping"
 fi
 
 echo ""
-
-# Clean up Docker kubeconfig
-if [ -f ~/.kube/config-docker ]; then
-    echo "🧹 Removing Docker kubeconfig..."
-    rm -f ~/.kube/config-docker
-    echo "✅ Docker kubeconfig removed"
-fi
-
-# Clean up kubeconfig marker file
-if [ -f ../../.make/kubeconfig-docker-generated ]; then
-    echo "🧹 Removing kubeconfig marker file..."
-    rm -f ../../.make/kubeconfig-docker-generated
-    echo "✅ Kubeconfig marker removed"
-fi
-
-echo ""
-
-# Clean up shared directory
-if [ -d "/tmp/kind-shared" ]; then
-    echo "🧹 Cleaning up /tmp/kind-shared..."
-    rm -rf /tmp/kind-shared
-    echo "✅ Shared directory cleaned"
-fi
-
-echo ""
-
-# Note about Colima
-echo "ℹ️  Note: Colima is still running. To stop it:"
-echo "   colima stop"
-echo ""
-echo "   To completely remove Colima:"
-echo "   colima delete"
-
+echo "ℹ️  Note: Colima default profile may still be running."
+echo "   To completely remove Colima: colima delete"
 echo ""
 echo "✅ Teardown complete!"

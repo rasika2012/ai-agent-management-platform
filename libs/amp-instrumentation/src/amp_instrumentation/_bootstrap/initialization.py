@@ -46,14 +46,18 @@ def configure_logging() -> None:
 
         # Configure the package root logger so all child loggers inherit
         amp_logger = logging.getLogger("amp_instrumentation")
-        if not amp_logger.hasHandlers():
+        if len(amp_logger.handlers) == 0:
             amp_logger.addHandler(handler)
             amp_logger.setLevel(logging.DEBUG)
+        # Prevent propagation to root logger (always set, even if handlers exist)
+        amp_logger.propagate = False
     else:
         # Use NullHandler by default
         amp_logger = logging.getLogger("amp_instrumentation")
-        if not amp_logger.hasHandlers():
+        if len(amp_logger.handlers) == 0:
             amp_logger.addHandler(logging.NullHandler())
+        # Prevent propagation to root logger (always set, even if handlers exist)
+        amp_logger.propagate = False
 
 
 class ConfigurationError(Exception):
@@ -82,7 +86,7 @@ def initialize_instrumentation() -> None:
     Initialize instrumentation from environment variables.
     """
     global _initialized
-    
+
     # Get logger for this module
     logger = logging.getLogger(__name__)
 
@@ -93,12 +97,14 @@ def initialize_instrumentation() -> None:
 
         try:
             # Validate and read required configuration
-            app_name = _get_required_env_var(env_vars.AMP_AGENT_NAME)
             otel_endpoint = _get_required_env_var(env_vars.AMP_OTEL_ENDPOINT)
             api_key = _get_required_env_var(env_vars.AMP_AGENT_API_KEY)
 
             # Get trace content setting (default: true)
             trace_content = os.getenv(env_vars.AMP_TRACE_CONTENT, "true")
+
+            # Get optional agent version
+            agent_version = os.getenv(env_vars.AMP_AGENT_VERSION)
 
             # Set Traceloop environment variables
             os.environ[env_vars.TRACELOOP_TRACE_CONTENT] = trace_content
@@ -108,32 +114,32 @@ def initialize_instrumentation() -> None:
             # Import and initialize Traceloop
             from traceloop.sdk import Traceloop
 
+            # Build resource attributes
+            resource_attributes = {}
+            if agent_version:
+                resource_attributes["agent-manager/agent-version"] = agent_version
+
             # Initialize Traceloop with configuration
             Traceloop.init(
                 telemetry_enabled=False,
-                app_name=app_name,
                 api_endpoint=otel_endpoint,
-                headers={"x-api-key": api_key},
+                headers={"x-amp-api-key": api_key},
+                resource_attributes=resource_attributes,
             )
 
             _initialized = True
-            logger.info(
-                f"Instrumentation initialized successfully for application: {app_name}"
-            )
+            logger.info("Instrumentation initialized successfully.")
 
         except ConfigurationError as e:
             logger.error(f"Configuration error: {e}")
             raise
 
         except ImportError as e:
-            logger.error(
-                f"Failed to import traceloop-sdk: {e}."
-            )
+            logger.error(f"Failed to import traceloop-sdk: {e}.")
             raise
 
         except Exception as e:
-            logger.error(
-                f"Unexpected error during instrumentation initialization: {e}",
-                exc_info=True,
+            logger.exception(
+                f"Unexpected error during instrumentation initialization: {e}"
             )
             raise

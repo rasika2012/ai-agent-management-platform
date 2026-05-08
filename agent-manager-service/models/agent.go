@@ -25,22 +25,30 @@ import (
 
 // API Response DTO
 type AgentResponse struct {
-	Name         string       `json:"name"`
-	DisplayName  string       `json:"displayName,omitempty"`
-	Description  string       `json:"description,omitempty"`
-	ProjectName  string       `json:"projectName"`
-	CreatedAt    time.Time    `json:"createdAt"`
-	Status       string       `json:"status,omitempty"`
-	Provisioning Provisioning `json:"provisioning,omitempty"`
-	Type    AgentType    `json:"type,omitempty"`
-	Language     string       `json:"language,omitempty"`
+	UUID           string          `json:"uuid"`
+	Name           string          `json:"name"`
+	DisplayName    string          `json:"displayName,omitempty"`
+	Description    string          `json:"description,omitempty"`
+	ProjectName    string          `json:"projectName"`
+	CreatedAt      time.Time       `json:"createdAt"`
+	Status         string          `json:"status,omitempty"`
+	Provisioning   Provisioning    `json:"provisioning,omitempty"`
+	Type           AgentType       `json:"type,omitempty"`
+	Build          *Build          `json:"build,omitempty"`
+	InputInterface *InputInterface `json:"inputInterface,omitempty"`
+	Configurations *Configurations `json:"configurations,omitempty"`
+}
+
+// Configurations contains runtime configurations for an agent
+type Configurations struct {
+	EnableAutoInstrumentation *bool `json:"enableAutoInstrumentation,omitempty"`
 }
 
 type AgentType struct {
 	// Type of the agent
 	Type string `json:"type"`
 	// Sub-type of the agent
-	SubType string `json:"subType"`
+	SubType string `json:"subType,omitempty"`
 }
 
 type Provisioning struct {
@@ -49,9 +57,26 @@ type Provisioning struct {
 }
 
 type Repository struct {
-	Url     string `json:"url"`
-	AppPath string `json:"appPath"`
-	Branch  string `json:"branch"`
+	Url       string `json:"url"`
+	AppPath   string `json:"appPath"`
+	Branch    string `json:"branch"`
+	SecretRef string `json:"secretRef,omitempty"`
+}
+
+type Build struct {
+	Type      string           `json:"type"` // "buildpack" or "docker"
+	Buildpack *BuildpackConfig `json:"buildpack,omitempty"`
+	Docker    *DockerConfig    `json:"docker,omitempty"`
+}
+
+type BuildpackConfig struct {
+	Language        string `json:"language"`
+	LanguageVersion string `json:"languageVersion,omitempty"`
+	RunCommand      string `json:"runCommand,omitempty"`
+}
+
+type DockerConfig struct {
+	DockerfilePath string `json:"dockerfilePath"`
 }
 
 // DB Model
@@ -61,8 +86,8 @@ type Agent struct {
 	Name             string         `gorm:"column:name"`
 	DisplayName      string         `gorm:"column:display_name"`
 	Description      string         `gorm:"column:description"`
-	ProjectId        uuid.UUID      `gorm:"column:project_id"`
-	OrgID            uuid.UUID      `gorm:"column:org_id"`
+	ProjectName      string         `gorm:"column:project_name"`
+	OrgName          string         `gorm:"column:org_name"`
 	CreatedAt        time.Time      `gorm:"column:created_at"`
 	UpdatedAt        time.Time      `gorm:"column:updated_at"`
 	DeletedAt        gorm.DeletedAt `gorm:"column:deleted_at"`
@@ -71,8 +96,5 @@ type Agent struct {
 
 type InternalAgent struct {
 	ID           uuid.UUID              `gorm:"column:id;primaryKey"`
-	AgentType    string                 `gorm:"column:agent_type"`
-	AgentSubType string                 `gorm:"column:agent_subtype"`
-	Language     string                 `gorm:"column:language"`
 	WorkloadSpec map[string]interface{} `gorm:"column:workload_spec;type:jsonb;serializer:json"`
 }

@@ -16,17 +16,19 @@
  * under the License.
  */
 
-import { AuthProvider as AsgardeoAuthProvider } from '@asgardeo/auth-react';
-import { globalConfig } from '@agent-management-platform/types';
-import { AuthProviderProps } from '../types';
+import {
+  AsgardeoProvider,
+} from "@asgardeo/react";
+import { globalConfig } from "@agent-management-platform/types";
+import type { AuthProviderProps } from "../types";
+
 
 export const AuthProvider = ({ children }: AuthProviderProps) => {
   const { authConfig } = globalConfig;
 
   return (
-    <AsgardeoAuthProvider config={authConfig}>
+    <AsgardeoProvider {...authConfig}>
       {children}
-    </AsgardeoAuthProvider>
+    </AsgardeoProvider>
   );
 };
-

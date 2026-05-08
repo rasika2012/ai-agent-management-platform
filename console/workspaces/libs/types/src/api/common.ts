@@ -33,11 +33,14 @@ export interface RepositoryConfig {
   url: string;
   branch: string;
   appPath: string;
+  secretRef: string | null;
 }
 
 export interface EnvironmentVariable {
   key: string;
   value: string;
+  isSensitive?: boolean;
+  secretRef?: string;
 }
 
 export interface RuntimeConfiguration {
@@ -47,13 +50,50 @@ export interface RuntimeConfiguration {
   env?: EnvironmentVariable[];
 }
 
+export interface RuntimeConfigurationWithoutEnv {
+  language: string;
+  languageVersion?: string;
+  runCommand?: string;
+}
+
+export interface BuildpackConfig {
+  language: string;
+  languageVersion?: string;
+  runCommand?: string;
+}
+
+export interface DockerConfig {
+  dockerfilePath: string;
+}
+
+export interface BuildpackBuild {
+  type: 'buildpack';
+  buildpack: BuildpackConfig;
+}
+
+export interface DockerBuild {
+  type: 'docker';
+  docker: DockerConfig;
+}
+
+export type Build = BuildpackBuild | DockerBuild;
+
+export interface Configurations {
+  env?: EnvironmentVariable[];
+  enableAutoInstrumentation?: boolean;
+}
+
 export interface EndpointSchema {
   content: string;
 }
 
+export interface SchemaPath {
+  path: string;
+}
+
 export interface EndpointSpec {
   port: number; // 1 - 65535
-  schema: EndpointSchema;
+  schema: SchemaPath;
   basePath: string;
 }
 
@@ -63,18 +103,22 @@ export interface ErrorResponse {
   additionalData?: Record<string, unknown>;
 }
 
+
 // Common path parameters
-export interface OrgProjPathParams {
-  orgName: string;
-  projName: string;
+export interface OrgPathParams {
+  orgName: string | undefined;
+}
+
+export interface OrgProjPathParams extends OrgPathParams {
+  projName: string | undefined;
 }
 
 export interface AgentPathParams extends OrgProjPathParams {
-  agentName: string;
+  agentName: string | undefined;
 }
 
 export interface BuildPathParams extends AgentPathParams {
-  buildName: string;
+  buildName: string | undefined;
 }
 
 // Resource name generation
@@ -93,7 +137,7 @@ export interface ResourceNameResponse {
 }
 
 export interface GenerateResourceNamePathParams {
-  orgName: string;
+  orgName: string | undefined;
 }
 
 

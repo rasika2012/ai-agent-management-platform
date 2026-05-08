@@ -16,50 +16,108 @@
  * under the License.
  */
 
-import { useAuthContext } from '@asgardeo/auth-react';
-import { useQuery } from '@tanstack/react-query';
-import { UserInfo } from '../../types';
+import { useAsgardeo, useUser } from "@asgardeo/react";
+import type { UserInfo } from "../../types";
+import { useCallback, useMemo } from "react";
+import { globalConfig } from "@agent-management-platform/types";
+import { useQuery } from "@tanstack/react-query";
 
-export const useAuthHooks = () => {
-  const { 
-      signIn, 
-      signOut,
-      getAccessToken,
-      getBasicUserInfo, 
-      isAuthenticated,
-      trySignInSilently,
-    } = useAuthContext() ?? {};
+const decodeJWTPart = (part: string): Record<string, unknown> | null => {
+  try {
+    const normalized = part.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    return JSON.parse(window.atob(padded)) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+};
 
-  const { data: userInfo , isLoading: isLoadingUserInfo } = useQuery({
-    queryKey: ['auth', 'userInfo'],
-    queryFn: () => {
-      return getBasicUserInfo();
+const decodeJWT = (token: string) => {
+  const [header, payload] = token.split(".");
+  if (!header || !payload) return null;
+
+  return {
+    header: decodeJWTPart(header),
+    payload: decodeJWTPart(payload),
+  };
+};
+
+export type AuthHooks = {
+  isAuthenticated: boolean;
+  userInfo: UserInfo;
+  isLoadingUserInfo: boolean;
+  isLoadingIsAuthenticated: boolean;
+  getToken: () => Promise<string>;
+  login: () => void;
+  logout: () => Promise<void>;
+  trySignInSilently: () => Promise<unknown>;
+};
+
+export const useAuthHooks = (): AuthHooks => {
+  const {
+    signIn,
+    getAccessToken,
+    signInSilently,
+    signOut,
+    isSignedIn = false,
+    isLoading = false,
+    isInitialized = false,
+  } = useAsgardeo() ?? {};
+
+  const { flattenedProfile } = useUser();
+  const { data: tokenInfo } = useQuery({
+    queryKey: ["tokenInfo", getAccessToken],
+    queryFn: async (): Promise<string> => {
+      const token = await getAccessToken?.();
+      if (!token) {
+        throw new Error("Access token is not available");
+      }
+      return token;
     },
+    select: (data) => decodeJWT(data as string),
   });
 
-  const { 
-      data: isAuthenticatedState,
-      isLoading: isLoadingIsAuthenticated,
-      refetch: refetchIsAuthenticated 
-    } = useQuery({
-    queryKey: ['isAuthenticated',isAuthenticated],
-    queryFn: () => {
-      return isAuthenticated();
-    },
-  });
+  const userInfo = useMemo(() => {
+    return {
+      ...flattenedProfile,
+      familyName: flattenedProfile?.family_name,
+      givenName: flattenedProfile?.given_name,
+      ...tokenInfo?.payload,
+    } as UserInfo;
+  }, [flattenedProfile, tokenInfo]);
 
   const customLogin = () => {
-    signIn();
-    refetchIsAuthenticated();
+    void signIn?.();
   };
+
+  const handleLogout = useCallback(async () => {
+    try {
+      await signOut?.();
+    } catch (error) {
+      console.error("Error during signOut:", error);
+    } finally {
+      window.location.assign(
+        globalConfig.authConfig.afterSignOutUrl ?? "/login",
+      );
+    }
+  }, [signOut]);
+
+  const safeGetToken: () => Promise<string> =
+    getAccessToken ??
+    (() => Promise.reject(new Error("getAccessToken is not available")));
+
+  const safeSignInSilently: () => Promise<unknown> =
+    signInSilently ??
+    (() => Promise.reject(new Error("signInSilently is not available")));
+
   return {
-    isAuthenticated: isAuthenticatedState,
-    userInfo: userInfo as UserInfo,
-    isLoadingUserInfo: isLoadingUserInfo,
-    isLoadingIsAuthenticated: isLoadingIsAuthenticated,
-    getToken: () => getAccessToken(),
-    login: () => customLogin(),
-    logout: () => signOut(),
-    trySignInSilently: () => trySignInSilently(),
+    isAuthenticated: isSignedIn && isInitialized,
+    userInfo,
+    isLoadingUserInfo: isLoading,
+    isLoadingIsAuthenticated: !isInitialized || isLoading,
+    getToken: safeGetToken,
+    login: customLogin,
+    logout: handleLogout,
+    trySignInSilently: safeSignInSilently,
   };
 };

@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/env.sh"
+
 echo "=== Setting up Port Forwarding for OpenChoreo Services ==="
 
 # Check if kubectl is available
@@ -10,13 +13,13 @@ if ! command -v kubectl &> /dev/null; then
 fi
 
 # Check if cluster is running
-if ! kubectl cluster-info --context k3d-openchoreo-local-v0.7 &> /dev/null; then
-    echo "❌ k3d cluster 'openchoreo-local-v0.7' is not running"
+if ! kubectl cluster-info --context $CLUSTER_CONTEXT &> /dev/null; then
+    echo "❌ k3d cluster '$CLUSTER_NAME' is not running"
     exit 1
 fi
 
 echo "🔧 Setting kubectl context..."
-kubectl config use-context k3d-openchoreo-local-v0.7
+kubectl config use-context $CLUSTER_CONTEXT
 
 echo ""
 echo "🌐 Starting port forwarding for OpenChoreo services..."
@@ -36,7 +39,7 @@ trap cleanup EXIT INT TERM
 echo "📊 Forwarding OpenSearch (9200)..."
 kubectl port-forward -n openchoreo-observability-plane svc/opensearch 9200:9200 &
 
-# Port forward Data Prepper
+# Port forward OpenTelemetry Collector
 echo "📊 Forwarding OpenTelemetry Collector..."
 kubectl port-forward -n openchoreo-observability-plane svc/opentelemetry-collector 21893:4318 &
 
@@ -44,18 +47,43 @@ kubectl port-forward -n openchoreo-observability-plane svc/opentelemetry-collect
 echo "🔍 Forwarding Traces Observer Service (9098)..."
 kubectl port-forward -n openchoreo-observability-plane svc/amp-traces-observer 9098:9098 &
 
-#Port forward Observer Service API
+# Port forward Observer Service API
 echo "🔍 Forwarding Observer Service API (8085)..."
 kubectl port-forward -n openchoreo-observability-plane svc/observer 8085:8080 &
 
+# Port forward Thunder (IDP)
+echo "🔑 Forwarding Thunder IDP Service (8090)..."
+kubectl port-forward -n amp-thunder svc/amp-thunder-extension-service 8090:8090 &
+
+# Port forward Observability Gateway
+echo "🌐 Forwarding Observability Gateway HTTP (22893)..."
+kubectl port-forward -n openchoreo-data-plane svc/obs-gateway-gateway-gateway-runtime 22893:22893 &
+
+# Port forward Observability Gateway
+echo "🌐 Forwarding Observability Gateway HTTPS (22894)..."
+kubectl port-forward -n openchoreo-data-plane svc/obs-gateway-gateway-gateway-runtime 22894:22894 &
+
+# Port forward OpenBao (system & user secrets)
+echo "🔐 Forwarding OpenBao (8200)..."
+kubectl port-forward -n openbao svc/openbao 8200:8200 &
+
+echo "Forwarding OpenChoreo Api (8195)..."
+kubectl port-forward svc/openchoreo-api -n openchoreo-control-plane 8195:8080 &
+
+# Port forward AI Gateway Runtime
+echo "🤖 Forwarding AI Gateway Runtime (8084)..."
+kubectl port-forward -n openchoreo-data-plane svc/default-ai-gateway-gateway-runtime 8084:8084 &
 
 echo ""
 echo "✅ Port forwarding active:"
-echo "   Observer Service API: http://localhost:8085"
-echo "   OpenSearch:           http://localhost:9200"
-echo "   Data Prepper:        http://localhost:21893"
-echo "   Traces Observer Service:      http://localhost:9098"
-echo "   OpenSearch Dashboard: http://localhost:5601"
+echo "   Thunder IDP Service:              http://localhost:8090"
+echo "   Observer Service API:             http://localhost:8085"
+echo "   OpenSearch:                       http://localhost:9200"
+echo "   Traces Observer Service:          http://localhost:9098"
+echo "   Observability Gateway:            http://localhost:22893/otel"
+echo "   Observability Gateway (HTTPS):    https://localhost:22894/otel"
+echo "   OpenBao:                          http://localhost:8200"
+echo "   AI Gateway Runtime:               http://localhost:8084"
 
 echo ""
 echo "💡 Keep this terminal open. Press Ctrl+C to stop."

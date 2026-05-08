@@ -16,14 +16,63 @@
  * under the License.
  */
 
-import { CreateAgentRequest, OrgProjPathParams } from '@agent-management-platform/types';
-import { AddAgentFormValues } from '../form/schema';
+import {
+  CreateAgentRequest,
+  ModelConfigRequest,
+  OrgProjPathParams,
+} from "@agent-management-platform/types";
+import { AddAgentFormValues, LLMProviderFormEntry } from "../form/schema";
+
+function buildOneModelConfig(
+  entry: LLMProviderFormEntry,
+): ModelConfigRequest | null {
+  const envMappings: ModelConfigRequest["envMappings"] = {};
+
+  for (const [envName, provider] of Object.entries(entry.selectedProviderByEnv)) {
+    if (!provider) continue;
+    envMappings[envName] = {
+      providerName: provider.handle,
+      configuration: {
+        policies:
+          entry.guardrails.length > 0
+            ? entry.guardrails.map((g) => ({
+              name: g.name,
+              version: g.version,
+              paths: [{ path: "/*", methods: ["*"], params: g.settings ?? {} }],
+            }))
+            : undefined,
+      },
+    };
+  }
+
+  if (Object.keys(envMappings).length === 0) return null;
+
+  const environmentVariables = [
+    ...(entry.urlVarName ? [{ key: "url", name: entry.urlVarName }] : []),
+    ...(entry.apikeyVarName ? [{ key: "apikey", name: entry.apikeyVarName }] : []),
+  ];
+
+  return {
+    envMappings,
+    ...(environmentVariables.length > 0 ? { environmentVariables } : {}),
+  };
+}
+
+function buildModelConfig(
+  llmProviders: LLMProviderFormEntry[],
+): ModelConfigRequest[] | undefined {
+  if (!llmProviders.length) return undefined;
+  const configs = llmProviders.map(buildOneModelConfig)
+    .filter((c): c is ModelConfigRequest => c !== null);
+  return configs.length > 0 ? configs : undefined;
+}
 
 export const buildAgentCreationPayload = (
   data: AddAgentFormValues,
-  params: OrgProjPathParams
+  params: OrgProjPathParams,
+  llmProviders: LLMProviderFormEntry[] = [],
 ): { params: OrgProjPathParams; body: CreateAgentRequest } => {
-  if (data.deploymentType === 'new') {
+  if (data.deploymentType === "new") {
     return {
       params,
       body: {
@@ -31,32 +80,58 @@ export const buildAgentCreationPayload = (
         displayName: data.displayName,
         description: data.description?.trim() || undefined,
         provisioning: {
-          type: 'internal',
+          type: "internal",
           repository: {
-            url: data.repositoryUrl ?? '',
-            branch: data.branch ?? 'main',
-            appPath: data.appPath ?? '/',
+            url: data.repositoryUrl ?? "",
+            branch: data.branch ?? "main",
+            appPath: data.appPath?.trim() || "/",
+            secretRef: data.gitSecretRef || null,
           },
         },
-        runtimeConfigs: {
-          language: data.language ?? 'python',
-          languageVersion: data.languageVersion ?? '3.11',
-          runCommand: data.runCommand ?? '',
+        agentType: {
+          type: "agent-api",
+          subType: data.interfaceType === "CUSTOM" ? "custom-api" : "chat-api",
+        },
+        build: data.language === "docker"
+          ? {
+            type: "docker" as const,
+            docker: {
+              dockerfilePath: data.dockerfilePath ?? "./Dockerfile",
+            },
+          }
+          : {
+            type: "buildpack" as const,
+            buildpack: {
+              language: data.language ?? "python",
+              languageVersion: data.languageVersion ?? "3.11",
+              runCommand: data.runCommand ?? "",
+            },
+          },
+        configurations: {
           env: data.env
-            .filter(envVar => envVar.key && envVar.value)
-            .map(envVar => ({ key: envVar.key!, value: envVar.value! })),
+            .filter((envVar) => envVar.key && envVar.value)
+            .map((envVar) => ({
+              key: envVar.key!.replace(/\s+/g, '_'),
+              value: envVar.value!,
+              isSensitive: envVar.isSensitive || false,
+            })),
+          enableAutoInstrumentation: data.enableAutoInstrumentation,
         },
         inputInterface: {
-          type: data.interfaceType,
-          ...(data.interfaceType === 'CUSTOM' && {
-            customOpenAPISpec: {
+          type: "HTTP",
+          ...(data.interfaceType === "CUSTOM"
+            ? {
               port: Number(data.port),
-              basePath: data.basePath || '/',
-              schema: { content: data.openApiContent ?? '' },
-            },
-          }),
+              basePath: data.basePath || "/",
+              schema: {
+                path: data.openApiPath ?? "",
+              },
+            }
+            : {}),
         },
-      }
+        ...((buildModelConfig(llmProviders)) ?
+          { modelConfig: buildModelConfig(llmProviders) } : {}),
+      },
     };
   }
 
@@ -67,9 +142,13 @@ export const buildAgentCreationPayload = (
       displayName: data.displayName,
       description: data.description,
       provisioning: {
-        type: 'external',
+        type: "external",
       },
-    }
+      agentType: {
+        type: "external-agent-api",
+        subType: "custom-api",
+      },
+      ...((buildModelConfig(llmProviders)) ? { modelConfig: buildModelConfig(llmProviders) } : {}),
+    },
   };
 };
-

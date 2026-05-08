@@ -16,6 +16,7 @@
 
 """Tests for sitecustomize.py automatic initialization."""
 
+import os
 import sys
 import subprocess
 from pathlib import Path
@@ -23,29 +24,43 @@ from pathlib import Path
 
 def test_sitecustomize_initialization_failure_exits_with_error():
     """
-    Test that sitecustomize.py exits with error code 1 when initialization fails.
+    Test that sitecustomize.py continues running when initialization fails.
+    Errors should be logged but the program should not crash.
     """
     bootstrap_dir = (
         Path(__file__).parent.parent / "src" / "amp_instrumentation" / "_bootstrap"
     )
 
     # Test script that imports sitecustomize (which will fail due to missing env vars)
-    script = "import sitecustomize"
+    # but should continue executing
+    script = """
+import sitecustomize
+from amp_instrumentation._bootstrap import initialization
+# Check that initialization failed gracefully
+assert initialization._initialized is False, "Instrumentation should not be initialized"
+print("CONTINUE_SUCCESS")
+"""
 
-    # Run WITHOUT required environment variables to trigger initialization failure
+    # Run WITHOUT required environment variables to trigger initialization failure.
+    # Start from os.environ to preserve LD_LIBRARY_PATH and other runtime paths,
+    # then strip AMP-specific vars so initialization will fail gracefully.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("AMP_")}
+    env["PYTHONPATH"] = str(bootstrap_dir)
+
     result = subprocess.run(
         [sys.executable, "-c", script],
-        env={"PYTHONPATH": str(bootstrap_dir)},
+        env=env,
         capture_output=True,
         text=True,
     )
 
-    # Should exit with error code 1
-    assert result.returncode == 1, "Expected exit code 1 when initialization fails"
+    # Should exit with success (0) - program continues despite initialization failure
+    assert result.returncode == 0, (
+        f"Expected exit code 0 (continue running) but got {result.returncode}: {result.stderr}"
+    )
 
-    # Should print error message to stderr
-    assert "Error: Environment variable" in result.stderr
-    assert "is required but not set" in result.stderr
+    # Verify program continued execution
+    assert "CONTINUE_SUCCESS" in result.stdout
 
 
 def test_sitecustomize_successful_initialization():
@@ -68,13 +83,12 @@ assert initialization._initialized is True, "Instrumentation should be initializ
 print("INIT_SUCCESS")
 """
 
-    # Run with required environment variables
-    env = {
-        "PYTHONPATH": str(bootstrap_dir),
-        "AMP_AGENT_NAME": "test-app",
-        "AMP_OTEL_ENDPOINT": "https://otel.example.com",
-        "AMP_AGENT_API_KEY": "test-key",
-    }
+    # Run with required environment variables.
+    # Inherit os.environ to preserve LD_LIBRARY_PATH and other runtime paths.
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(bootstrap_dir)
+    env["AMP_OTEL_ENDPOINT"] = "https://otel.example.com"
+    env["AMP_AGENT_API_KEY"] = "test-key"
 
     result = subprocess.run(
         [sys.executable, "-c", script], env=env, capture_output=True, text=True

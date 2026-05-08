@@ -16,28 +16,39 @@
  * under the License.
  */
 
-import { Box } from '@wso2/oxygen-ui';
-import { BuildCard, DeployCard } from './subComponent';
-import { useParams } from 'react-router-dom';
-import { useListEnvironments } from '@agent-management-platform/api-client';
+import { Fragment } from "react";
+import { Box, Stack } from "@wso2/oxygen-ui";
+import { BuildCard, DeployCard } from "./subComponent";
+import { useParams } from "react-router-dom";
+import { useListEnvironments } from "@agent-management-platform/api-client";
+import { PageLayout } from "@agent-management-platform/views";
 
 export const DeployComponent = () => {
   const { orgId } = useParams();
 
   const { data: environments } = useListEnvironments({
-    orgName: orgId ?? '',
+    orgName: orgId,
   });
-  
 
   return (
-    <Box display="flex" gap={4} pb={4} pt={4}>
-      <BuildCard />
-      {
-        environments?.map((env) => (
-          <DeployCard key={env.name} currentEnvironment={env} />
-        ))
-      }
-    </Box>
+    <PageLayout title="Deploy" disableIcon>
+      <Stack direction="row" pb={4} width="100%" overflow="auto">
+        <BuildCard initialEnvironment={environments?.[0]} />
+        {environments?.map((env) => (
+          <Fragment key={env.name}>
+            <Box
+              sx={(theme) => ({
+                width: theme.spacing(4),
+                height: theme.spacing(0.5),
+                mt: theme.spacing(14),
+                bgcolor: "divider",
+              })}
+            />
+            <DeployCard currentEnvironment={env} />
+          </Fragment>
+        ))}
+      </Stack>
+    </PageLayout>
   );
 };
 

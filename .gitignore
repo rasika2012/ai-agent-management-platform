@@ -34,6 +34,9 @@ replay_pid*
 go.work
 vendor/
 service/bin/
+agent-manager-service/agent-manager-service
+/amctl
+/dist/
 
 # IDEs
 .vscode/
@@ -42,6 +45,8 @@ service/bin/
 *.swo
 *~
 .DS_Store
+.github/skills
+.github/copilot-instructions.md
 
 # Docker
 .dockerignore
@@ -58,4 +63,24 @@ service/bin/
 .make/
 .kube/
 
+# Helm
+charts/
+
 .env
+
+# Local development configurations
+deployments/values/api-platform-operator-local-config.yaml
+
+mocks/
+libs/amp-evaluation/samples-old/
+temp/
+evaluation-job/tmp/
+generator/*
+
+.*_cache/
+__pycache__/
+.deepeval/
+.claude/
+local-scripts/
+
+website/

@@ -12,3 +12,13 @@ localdata/*
 
 # Build output
 tmp/*
+
+.kube
+
+# Private keys
+keys/*.pem
+keys/*.key
+keys/public-keys-config.json
+
+# Evaluator artifacts
+data/

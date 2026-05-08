@@ -17,27 +17,22 @@
  */
 
 import { TestComponent } from './Test.Component';
-import { TestProject } from './Test.Project';
-import { TestOrganization } from './Test.Organization';
+import type { PageMetadata } from '@agent-management-platform/types';
 import { FlaskConical as ScienceOutlined } from '@wso2/oxygen-ui-icons-react';
 
-export const metaData = {
-  title: 'Test',
-  description: 'A page component for Test',
+export const metaData: PageMetadata = {
+  title: 'Try It',
+  description: 'A page component for Try It',
   icon: ScienceOutlined,
   path: '/test',
   component: TestComponent,
   levels: {
     component: TestComponent,
-    project: TestProject,
-    organization: TestOrganization,
   },
 };
 
 export { 
-  TestComponent,
-  TestProject,
-  TestOrganization,
+  TestComponent
 };
 
 export default TestComponent;

@@ -1,0 +1,325 @@
+# Thunder subchart configuration
+thunder:
+  deployment:
+    replicaCount: 1
+    strategy:
+      rollingUpdate:
+        maxSurge: 1
+        maxUnavailable: 0
+    securityContext:
+      # Read-only root filesystem. Must be false for SQLite
+      readOnlyRootFilesystem: false
+      enableRunAsUser: true
+      fsGroup: 10001
+      runAsUser: 10001
+      seccompProfile:
+        enabled: true
+        type: RuntimeDefault
+    terminationGracePeriodSeconds: 10
+    image:
+      registry: ghcr.io/asgardeo
+      repository: thunder
+      tag: "0.34.0"
+      pullPolicy: Always
+    container:
+      port: 8090
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+  persistence:
+    enabled: false
+    storageClass: ""
+    accessMode: ReadWriteOnce
+    size: 1Gi
+    annotations: {}
+  service:
+    port: 8090
+  serviceAccount:
+    name: thunder-service-account
+    create: true
+  hpa:
+    enabled: false
+  pdb:
+    minAvailable: "50%"
+  ingress:
+    enabled: false
+  ocIngress:
+    hostname: "thunder.amp.localhost"
+  configuration:
+    server:
+      port: 8090
+      httpOnly: true
+      publicUrl: "http://thunder.amp.localhost:8080"
+    gateClient:
+      hostname: "thunder.amp.localhost"
+      port: 8080
+      scheme: "http"
+      path: "/gate"
+    crypto:
+      encryption:
+        key: "file://repository/resources/security/crypto.key"
+      passwordHashing:
+        algorithm: "PBKDF2"
+        argon2id:
+          iterations: 2
+          memory: 19456
+          parallelism: 1
+          key_size: 32
+          salt_size: 16
+        pbkdf2:
+          iterations: 600000
+          key_size: 32
+          salt_size: 16
+        sha256:
+          salt_size: 16
+      keys:
+        - id: "default-key"
+          certFile: "repository/resources/security/signing.cert"
+          keyFile: "repository/resources/security/signing.key"
+    database:
+      config:
+        type: sqlite
+        sqlite:
+          path: "repository/database/configdb.db"
+          options: "_journal_mode=WAL&_busy_timeout=5000&_pragma=foreign_keys(1)"
+          max_open_conns: 500
+          max_idle_conns: 100
+          conn_max_lifetime: 3600
+      runtime:
+        type: sqlite
+        sqlite:
+          path: "repository/database/runtimedb.db"
+          options: "_journal_mode=WAL&_busy_timeout=5000&_pragma=foreign_keys(1)"
+          max_open_conns: 500
+          max_idle_conns: 100
+          conn_max_lifetime: 3600
+      user:
+        type: sqlite
+        sqlite:
+          path: "repository/database/userdb.db"
+          options: "_journal_mode=WAL&_busy_timeout=5000&_pragma=foreign_keys(1)"
+          max_open_conns: 500
+          max_idle_conns: 100
+          conn_max_lifetime: 3600
+    cache:
+      disabled: false
+      type: "inmemory"
+      size: 1000
+      ttl: 3600
+      evictionPolicy: "LRU"
+      cleanupInterval: 300
+    jwt:
+      issuer: "http://thunder.amp.localhost:8080"
+      validityPeriod: 3600
+      audience: "application"
+      preferredKeyId: "default-key"
+    oauth:
+      refreshToken:
+        renewOnGrant: false
+        validityPeriod: 86400
+      authorizationCode:
+        validityPeriod: 600
+      dcr:
+        insecure: false
+    consent:
+      enabled: true
+      baseUrl: "http://localhost:9090/api/v1"
+      timeout: 5
+      maxRetries: 3
+      server:
+        port: 9090
+        hostname: "localhost"
+      database:
+        type: sqlite
+        sqlitePath: "repository/database/consentdb.db"
+        sqliteOptions: "_pragma=journal_mode(WAL)&_pragma=cache_size(-16000)"
+    cors:
+      allowedOrigins:
+        - "http://localhost:3000"
+  setup:
+    enabled: true
+    backoffLimit: 3
+    ttlSecondsAfterFinished: 86400
+    preserveJob: true
+    debug: false
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+      requests:
+        cpu: 250m
+        memory: 128Mi
+  bootstrap:
+    enabled: true
+    configMap:
+      name: amp-thunder-bootstrap
+      files:
+        - 50-amp-api-client.sh
+        - 51-user-schema-and-users.sh
+        - 52-amp-console-app.sh
+        - 53-workload-publisher-app.sh
+        - 54-observer-resource-reader-app.sh
+        - 55-amp-publisher-client.sh
+        - 56-amp-system-client.sh
+        - 57-amctl-client.sh
+        - 58-am-mcp-client.sh
+    # Observer Resource Reader Client configuration (for observability plane to read resources)
+    observerResourceReaderClient:
+      clientId: "openchoreo-observer-resource-reader-client" # clusterauthzrolebinding is already created with this clientId by openchoreo, so it should not be changed unless the corresponding ClusterAuthzRoleBinding is also updated
+      clientSecret: "openchoreo-observer-resource-reader-client-secret"
+      name: "OpenChoreo Observer Resource Reader"
+      description: "OpenChoreo Observer Resource Reader Client for reading resources from control plane"
+      grantTypes:
+        - "client_credentials"
+      tokenEndpointAuthMethod: "client_secret_post"
+      pkceRequired: false
+      publicClient: false
+      accessTokenValidityPeriod: 3600
+    # Workload Publisher Client configuration (for CI workflows to create workloads)
+    workloadPublisherClient:
+      clientId: "openchoreo-workload-publisher-client" # clusterauthzrolebinding is already created with this clientId by openchoreo, so it should not be changed unless the corresponding ClusterAuthzRoleBinding is also updated
+      clientSecret: "openchoreo-workload-publisher-secret"
+      name: "Workload Publisher"
+      description: "OpenChoreo Workload Publisher Client for creating workloads from CI workflows"
+      grantTypes:
+        - "client_credentials"
+      tokenEndpointAuthMethod: "client_secret_post"
+      pkceRequired: false
+      publicClient: false
+      accessTokenValidityPeriod: 3600
+    # AMP API Client configuration
+    ampApiClient:
+      clientId: "amp-api-client"
+      clientSecret: "amp-api-client-secret"
+      name: "AMP API Client"
+      description: "Client application for AMP API access"
+      grantTypes:
+        - "client_credentials"
+      tokenEndpointAuthMethod: "client_secret_basic"
+      pkceRequired: false
+      publicClient: false
+      accessTokenValidityPeriod: 3600
+    # AMP System Client configuration (for agent-manager to provision per-org OAuth apps via Thunder admin API)
+    # WARNING: clientSecret below is a LOCAL-DEVELOPMENT-ONLY placeholder.
+    # In production, override ampSystemClient.clientSecret via a Kubernetes Secret
+    # or external secret manager. Deploying with this default value is insecure.
+    ampSystemClient:
+      clientId: "amp-system-client"
+      clientSecret: "amp-system-client-secret"
+      name: "AMP System Client"
+      description: "System client for agent-manager to provision per-org OAuth apps"
+      grantTypes:
+        - "client_credentials"
+      tokenEndpointAuthMethod: "client_secret_basic"
+      pkceRequired: false
+      publicClient: false
+      accessTokenValidityPeriod: 3600
+    # AMP Publisher Client configuration (for evaluation job to publish scores)
+    ampPublisherClient:
+      clientId: "amp-publisher-client"
+      clientSecret: "amp-publisher-client-secret"  # Override in production; must match the value stored in OpenBao at secret/amp-publisher-client-secret (used by ExternalSecret at workflow runtime)
+      name: "AMP Publisher Client"
+      description: "Client application for evaluation job to publish scores"
+      grantTypes:
+        - "client_credentials"
+      tokenEndpointAuthMethod: "client_secret_basic"
+      pkceRequired: false
+      publicClient: false
+      accessTokenValidityPeriod: 3600
+    # AMP CLI Client configuration (public PKCE client for interactive login)
+    amCliClient:
+      clientId: "amctl"
+      name: "AMCTL"
+      description: "AMP CLI application for interactive user login"
+      redirectUris:
+        - "http://127.0.0.1:10325/callback"
+      grantTypes:
+        - "authorization_code"
+        - "refresh_token"
+      responseTypes:
+        - "code"
+      allowedUserTypes:
+        - "engineer"
+      tokenEndpointAuthMethod: "none"
+      pkceRequired: true
+      publicClient: true
+      accessTokenValidityPeriod: 3600
+      idTokenValidityPeriod: 3600
+      userAttributes:
+        - "given_name"
+        - "family_name"
+        - "username"
+        - "groups"
+        - "ouId"
+    # AMP MCP Client configuration (public PKCE client for interactive login)
+    amMcpClient:
+      clientId: "am-mcp"
+      name: "AMP MCP"
+      description: "AMP MCP application for interactive user login"
+      redirectUris:
+        - "http://127.0.0.1:33418/callback"
+        - "http://localhost:33418/callback"
+      grantTypes:
+        - "authorization_code"
+        - "refresh_token"
+      responseTypes:
+        - "code"
+      allowedUserTypes:
+        - "engineer"
+      tokenEndpointAuthMethod: "none"
+      pkceRequired: true
+      publicClient: true
+      accessTokenValidityPeriod: 3600
+      idTokenValidityPeriod: 3600
+      userAttributes:
+        - "given_name"
+        - "family_name"
+        - "username"
+        - "groups"
+        - "ouId"
+    # AMP Console Client configuration
+    ampConsoleClient:
+      clientId: "amp-console-client"
+      clientSecret: "amp-console-client-secret"
+      name: "AMP Console"
+      description: "AMP Console Application"
+      redirectUris:
+        - "http://localhost:3000/login"
+      grantTypes:
+        - "authorization_code"
+        - "refresh_token"
+      responseTypes:
+        - "code"
+      allowedUserTypes:
+        - "engineer"
+      tokenEndpointAuthMethod: "none"
+      pkceRequired: true
+      publicClient: true
+      accessTokenValidityPeriod: 3600
+      idTokenValidityPeriod: 3600
+      userAttributes:
+        - "given_name"
+        - "family_name"
+        - "username"
+        - "groups"
+        - "ouId"
+    # Default Organization unit configuration
+    organizationUnit:
+      name: "Default"
+      handle: "default"
+      description: "Default organizational unit"
+    # User schema configuration
+    userSchema:
+      name: "engineer"
+      allowSelfRegistration: true
+    # Default admin user configuration
+    defaultUsers:
+      - username: "amp-admin@wso2.com"
+        password: "Amp-Admin@wso2.com"
+        givenName: "Admin"
+        familyName: "User"
+        groups: ["platformEngineer"]

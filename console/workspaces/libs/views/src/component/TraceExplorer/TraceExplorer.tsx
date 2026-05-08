@@ -16,17 +16,16 @@
  * under the License.
  */
 
-import { Span } from '@agent-management-platform/types';
+import type { Span, LLMData, AgentData } from '@agent-management-platform/types';
 import {
   Box,
-  Button,
   ButtonBase,
   Chip,
   Collapse,
   IconButton,
+  Stack,
   Tooltip,
   Typography,
-  useTheme,
 } from '@wso2/oxygen-ui';
 import { useCallback, useMemo, useState } from 'react';
 import {
@@ -34,17 +33,23 @@ import {
   Brain,
   ChevronDown,
   Minus,
-  Languages,
-  DollarSign,
-  HandCoins,
-  List,
-  Funnel,
+  XCircle,
+  Link,
+  Coins,
+  CircleQuestionMark,
+  Wrench,
+  Layers,
+  Search,
+  ArrowUpDown,
+  Bot,
+  ClipboardCheck,
+  Info,
 } from '@wso2/oxygen-ui-icons-react';
-import { TraceEntityPreview } from './TraceEntityPreview';
 
 interface TraceExplorerProps {
   spans: Span[];
-  onOpenAtributesClick: (span: Span) => void;
+  onOpenAttributesClick: (span: Span) => void;
+  selectedSpan: Span | null;
 }
 
 interface RenderSpan {
@@ -53,6 +58,78 @@ interface RenderSpan {
   key: string;
   parentKey: string | null;
   childrenKeys: string[] | null;
+}
+
+// Helper function to extract token usage from data based on span kind
+function getTokenUsage(span: Span) {
+  const { kind, data } = span.ampAttributes || {};
+  if (kind === 'llm' && data) {
+    return (data as LLMData).tokenUsage;
+  } else if (kind === 'agent' && data) {
+    return (data as AgentData).tokenUsage;
+  }
+  return undefined;
+}
+
+export function SpanIcon({ span }: { span: Span }) {
+  const kind = span.ampAttributes?.kind;
+
+  switch (kind) {
+    case 'llm':
+      return (
+        <Box color="primary.main">
+          <Brain size={16} />
+        </Box>
+      );
+    case 'embedding':
+      return (
+        <Box color="success.main">
+          <Layers size={16} />
+        </Box>
+      );
+    case 'tool':
+      return (
+        <Box color="info.light">
+          <Wrench size={16} />
+        </Box>
+      );
+    case 'retriever':
+      return (
+        <Box color="info.main">
+          <Search size={16} />
+        </Box>
+      );
+    case 'rerank':
+      return (
+        <Box color="success.main">
+          <ArrowUpDown size={16} />
+        </Box>
+      );
+    case 'agent':
+      return (
+        <Box color="warning.main">
+          <Bot size={16} />
+        </Box>
+      );
+    case 'crewaitask':
+      return (
+        <Box sx={{ color: '#9C27B0' }}>
+          <ClipboardCheck size={16} />
+        </Box>
+      );
+    case 'chain':
+      return (
+        <Box color="text.secondary">
+          <Link size={16} />
+        </Box>
+      );
+    default:
+      return (
+        <Box color="secondary.dark">
+          <CircleQuestionMark size={16} />
+        </Box>
+      );
+  }
 }
 
 function formatDuration(durationInNanos: number) {
@@ -67,7 +144,7 @@ function formatDuration(durationInNanos: number) {
 const populateRenderSpans = (
   spans: Span[]
 ): {
-  renderSpanMap: Map<string, RenderSpan>;
+  spanMap: Map<string, RenderSpan>;
   rootSpans: string[];
 } => {
   // Sort spans by start time (earliest first)
@@ -80,9 +157,12 @@ const populateRenderSpans = (
   // First pass: Build a map of spanId -> array of child spanIds
   const childrenMap = new Map<string, string[]>();
   const rootSpans: string[] = [];
+  const spanKeySet = new Set<string>(sortedSpans.map((span) => span.spanId));
 
   sortedSpans.forEach((span) => {
-    if (span.parentSpanId) {
+    // Make it considered as a parent span if parent span is not there in the sorted spans
+    // or parent span is null
+    if (span.parentSpanId && spanKeySet.has(span.parentSpanId)) {
       const children = childrenMap.get(span.parentSpanId) || [];
       children.push(span.spanId);
       childrenMap.set(span.parentSpanId, children);
@@ -92,11 +172,11 @@ const populateRenderSpans = (
   });
 
   // Second pass: Create RenderSpan objects and store them in a Map keyed by spanId
-  const renderSpanMap = new Map<string, RenderSpan>();
+  const spanMap = new Map<string, RenderSpan>();
 
   sortedSpans.forEach((span) => {
     const childrenKeys = childrenMap.get(span.spanId) || null;
-    renderSpanMap.set(span.spanId, {
+    spanMap.set(span.spanId, {
       span,
       children: [],
       key: span.spanId,
@@ -105,36 +185,28 @@ const populateRenderSpans = (
     });
   });
 
-  return { renderSpanMap, rootSpans };
+  return { spanMap, rootSpans };
 };
 
 export function TraceExplorer(props: TraceExplorerProps) {
-  const { spans, onOpenAtributesClick } = props;
-  const theme = useTheme();
-
+  const { spans, onOpenAttributesClick, selectedSpan } = props;
   const renderSpan = useCallback(
     (
       key: string,
-      renderSpanMap: Map<string, RenderSpan>,
+      spanMap: Map<string, RenderSpan>,
       expandedSpans: Record<string, boolean>,
       toggleExpanded: (key: string) => void,
       isLastChild?: boolean,
       isRoot?: boolean
     ) => {
-      const span = renderSpanMap.get(key);
+      const span = spanMap.get(key);
       if (!span) {
         return null;
       }
       const expanded = expandedSpans[key];
       const hasChildren = span.childrenKeys && span.childrenKeys.length > 0;
       return (
-        <Box
-          key={key}
-          display="flex"
-          position="relative"
-          flexDirection="column"
-          flexGrow={1}
-        >
+        <Stack key={key} spacing={1} width="100%">
           {/* Connecting lines - only show for non-root nodes */}
           {!isRoot && (
             <>
@@ -143,14 +215,13 @@ export function TraceExplorer(props: TraceExplorerProps) {
                 position="absolute"
                 sx={{
                   width: 32,
-                  height: 44,
-                  borderLeft: isLastChild
-                    ? `2px solid ${theme.palette.primary.main}`
-                    : 'none',
-                  borderBottom: `2px solid ${theme.palette.primary.main}`,
+                  height: 40,
+                  borderLeft: isLastChild ? `2px solid` : 'none',
+                  borderBottom: `2px solid`,
+                  borderColor: 'divider',
                   left: -32,
-                  top: -22,
-                  borderBottomLeftRadius: isLastChild ? '4px' : 0,
+                  top: -14,
+                  borderBottomLeftRadius: isLastChild ? 8 : 0,
                 }}
               />
               {/* Vertical line continuing down (only if not last child) */}
@@ -158,191 +229,149 @@ export function TraceExplorer(props: TraceExplorerProps) {
                 <Box
                   position="absolute"
                   sx={{
-                    width: 2,
+                    width: 1,
                     height: '100%',
-                    background: theme.palette.primary.main,
+                    borderLeft: `2px solid`,
+                    borderColor: 'divider',
                     left: -32,
-                    top: -22,
+                    top: -20,
                   }}
                 />
               )}
             </>
           )}
-
           <ButtonBase
-            onClick={() => onOpenAtributesClick(span.span)}
+            onClick={() => onOpenAttributesClick(span.span)}
             sx={{
               width: '100%',
-              mb: 0.5,
-              justifyContent: 'space-between',
-              textAlign: 'left',
-              flexGrow: 1,
-              display: 'flex',
-              border: `0px solid ${theme.palette.secondary.main}`,
-              borderLeft: `2px solid ${theme.palette.primary.main}`,
-              transition: 'all 0.2s ease-in-out',
-              backgroundColor: 'background.paper',
-              '&:hover': {
-                backgroundColor: 'background.default',
-              },
             }}
           >
-            <Box display="flex" pl={1} justifyContent="center" alignItems="center" height="100%" flexDirection="row" gap={1}>
-              <IconButton
-                disabled={!hasChildren}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  e.preventDefault();
-                  toggleExpanded(key);
-                }}
-                color="primary"
-                sx={{
-                    height: 'fit-content',
-                    width: 'fit-content',
-                }}
+            <Stack
+              direction="row"
+              width="100%"
+              justifyContent="space-between"
+              sx={{
+                border: `1px solid`,
+                borderColor:
+                  selectedSpan?.spanId === span.span.spanId
+                    ? 'primary.main'
+                    : 'divider',
+                borderRadius: 0.5,
+                backgroundColor: 'background.paper',
+                px: 1,
+                transition: 'all 0.2s ease-in-out',
+                '&:hover': {
+                  backgroundColor: 'background.default',
+                },
+              }}
+            >
+              <Stack
+                direction="row"
+                spacing={1}
+                flexGrow={1}
+                alignItems="center"
+                maxWidth="100%"
               >
-                {hasChildren ? (
-                  <>
-                    <Box
-                      component="span"
-                      sx={{
-                        transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)',
-                        display: 'inline-flex',
-                        transition: 'transform 0.2s ease-in-out',
-                      }}
-                    >
-                      <ChevronDown size={16} />
-                    </Box>
-                  </>
-                ) : (
-                  <Minus size={16} />
-                )}
-              </IconButton>
-              <Box
-                display="flex"
-                flexDirection="column"
-                justifyContent="start"
-                py={1}
-              >
-                <Box
-                  display="flex"
-                  flexDirection="row"
-                  justifyContent="start"
-                  alignItems="center"
-                  gap={1}
+                <IconButton
+                  disabled={!hasChildren}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    toggleExpanded(key);
+                  }}
+                  size="small"
+                  color="primary"
                 >
-                  <Typography variant="h6">
-                    {span.span.name} &nbsp;
+                  {hasChildren ? (
+                    <>
+                      <Box
+                        component="span"
+                        sx={{
+                          transform: expanded
+                            ? 'rotate(180deg)'
+                            : 'rotate(0deg)',
+                          display: 'inline-flex',
+                          transition: 'transform 0.2s ease-in-out',
+                        }}
+                      >
+                        <ChevronDown size={16} />
+                      </Box>
+                    </>
+                  ) : (
+                    <Minus size={16} />
+                  )}
+                </IconButton>
+                <SpanIcon span={span.span} />
+                <Stack
+                  direction="column"
+                  p={0.5}
+                  alignItems="start"
+                  overflow="hidden"
+                >
+                  <Stack
+                    direction="row"
+                    spacing={1}
+                    alignItems="center"
+                    maxWidth="100%"
+                  >
+                    <Tooltip
+                      title={span.span.name}
+                      disableHoverListener={span.span.name.length < 30}
+                    >
+                      <Typography
+                        variant="body2"
+                        noWrap
+                        textOverflow="ellipsis"
+                        maxWidth="70%"
+                        overflow="hidden"
+                      >
+                        {span.span.name}
+                      </Typography>
+                    </Tooltip>
+                    {span.span.ampAttributes?.status?.error && (
+                      <Stack
+                        justifyContent="center"
+                        sx={{ color: 'error.main' }}
+                      >
+                        <XCircle size={16} />
+                      </Stack>
+                    )}
+                    {(() => {
+                      const tokenUsage = getTokenUsage(span.span);
+                      return (
+                        tokenUsage && (
+                          <Tooltip
+                            title={`${tokenUsage.inputTokens} input tokens, ${tokenUsage.outputTokens} output tokens`}
+                          >
+                            <Chip
+                              icon={<Coins size={16} />}
+                              label={tokenUsage.totalTokens}
+                              size="small"
+                              variant="outlined"
+                            />
+                          </Tooltip>
+                        )
+                      );
+                    })()}
                     <Chip
                       icon={<Clock size={16} />}
                       label={formatDuration(span.span.durationInNanos)}
                       size="small"
                       variant="outlined"
                     />
-                  </Typography>
-                  <Typography variant="caption">
-                    id: {span.span.spanId}
-                  </Typography>
-                </Box>
-                <Box display="flex" flexDirection="row" gap={1}>
-                  <TraceEntityPreview span={span.span} />
-                </Box>
-              </Box>
-            </Box>
-            <Box
-              p={1}
-              display="flex"
-              gap={1}
-              alignItems="flex-end"
-              justifyContent="right"
-            >
-              <Box display="flex" flexDirection="row" gap={1}>
-                {!!span.span?.attributes['gen_ai.request.model'] && (
-                  <Tooltip title={'GenAI Model'}>
-                    <Chip
-                      icon={<Brain size={16} />}
-                      label={
-                        span.span?.attributes['gen_ai.request.model'] as string
-                      }
-                      color="default"
-                      size="small"
-                      variant="outlined"
-                    />
+                  </Stack>
+                </Stack>
+              </Stack>
+              <Stack direction="row" spacing={1} alignItems="center">
+                {isRoot && span.parentKey && (
+                  <Tooltip title="Unable to determine the parent span">
+                    <Box color="warning.main">
+                      <Info size={16} />
+                    </Box>
                   </Tooltip>
                 )}
-                {!!span.span?.attributes[
-                  'traceloop.association.properties.ls_model_type'
-                ] && (
-                  <Tooltip title={'Language Service Model Type'}>
-                    <Chip
-                      icon={<Languages size={16} />}
-                      label={
-                        span.span?.attributes[
-                          'traceloop.association.properties.ls_model_type'
-                        ] as string
-                      }
-                      size="small"
-                      variant="outlined"
-                    />
-                  </Tooltip>
-                )}
-                {!!span.span?.attributes['traceloop.span.kind'] && (
-                  <Tooltip title={'Span Kind'}>
-                    <Chip
-                      label={
-                        span.span?.attributes['traceloop.span.kind'] as string
-                      }
-                      icon={<Funnel size={16} />}
-                      size="small"
-                      variant="outlined"
-                    />
-                  </Tooltip>
-                )}
-                {!!span.span?.attributes['gen_ai.usage.completion_tokens'] && (
-                  <Tooltip title={'Completion Tokens'}>
-                    <Chip
-                      icon={<DollarSign size={16} />}
-                      label={
-                        span.span?.attributes[
-                          'gen_ai.usage.completion_tokens'
-                        ] as string
-                      }
-                      color="default"
-                      size="small"
-                      variant="outlined"
-                    />
-                  </Tooltip>
-                )}
-                {!!span.span?.attributes['gen_ai.usage.prompt_tokens'] && (
-                  <Tooltip title={'Prompt Tokens'}>
-                    <Chip
-                      icon={<HandCoins size={16} />}
-                      label={
-                        span.span?.attributes[
-                          'gen_ai.usage.prompt_tokens'
-                        ] as string
-                      }
-                      color="default"
-                      size="small"
-                      variant="outlined"
-                    />
-                  </Tooltip>
-                )}
-              </Box>
-              <Button
-                onClick={(e) => {
-                  onOpenAtributesClick(span.span);
-                  e.stopPropagation();
-                  e.preventDefault();
-                }}
-                startIcon={<List size={16} />}
-                variant="text"
-                size="small"
-                color="primary"
-              >
-                Span Details
-              </Button>
-            </Box>
+              </Stack>
+            </Stack>
           </ButtonBase>
           {hasChildren && (
             <Collapse in={expanded} unmountOnExit>
@@ -356,7 +385,7 @@ export function TraceExplorer(props: TraceExplorerProps) {
                   <Box key={childKey} display="flex" position="relative">
                     {renderSpan(
                       childKey,
-                      renderSpanMap,
+                      spanMap,
                       expandedSpans,
                       toggleExpanded,
                       index === (span.childrenKeys?.length || 0) - 1,
@@ -367,17 +396,17 @@ export function TraceExplorer(props: TraceExplorerProps) {
               </Box>
             </Collapse>
           )}
-        </Box>
+        </Stack>
       );
     },
-    [onOpenAtributesClick, theme]
+    [onOpenAttributesClick, selectedSpan]
   );
 
   const [expandedSpans, setExpandedSpans] = useState<Record<string, boolean>>(
     () => {
       return spans.reduce(
         (acc, span) => {
-          acc[span.spanId] = !span.parentSpanId;
+          acc[span.spanId] = true;
           return acc;
         },
         {} as Record<string, boolean>
@@ -385,7 +414,7 @@ export function TraceExplorer(props: TraceExplorerProps) {
     }
   );
 
-  const renderSpans = useMemo(() => populateRenderSpans(spans), [spans]);
+  const renderingSpans = useMemo(() => populateRenderSpans(spans), [spans]);
 
   const renderedSpans = useMemo(() => {
     const toggleExpanded = (key: string) => {
@@ -394,25 +423,23 @@ export function TraceExplorer(props: TraceExplorerProps) {
         [key]: !prev[key],
       }));
     };
-    return renderSpans.rootSpans.map((rootSpan, index) => (
-      <Box key={rootSpan} mb={2} display="flex" flexGrow={1}>
+    return renderingSpans.rootSpans.map((rootSpan, index) => (
+      <Stack key={rootSpan}>
         {renderSpan(
           rootSpan,
-          renderSpans.renderSpanMap,
+          renderingSpans.spanMap,
           expandedSpans,
           toggleExpanded,
-          index === renderSpans.rootSpans.length - 1,
-          true // isRoot
+          index === renderingSpans.rootSpans.length - 1,
+          true // isRoot,
         )}
-      </Box>
+      </Stack>
     ));
-  }, [renderSpans, expandedSpans, renderSpan]);
+  }, [renderingSpans, expandedSpans, renderSpan]);
 
   return (
-    <Box display="flex" gap={2}>
-      <Box position="relative" display="flex" flexGrow={1}>
-        {renderedSpans}
-      </Box>
-    </Box>
+    <Stack direction="column" spacing={2}>
+      {renderedSpans}
+    </Stack>
   );
 }

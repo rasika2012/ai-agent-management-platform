@@ -19,8 +19,8 @@ package api
 import (
 	"net/http"
 
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/controllers"
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/middleware"
+	"github.com/wso2/agent-manager/agent-manager-service/controllers"
+	"github.com/wso2/agent-manager/agent-manager-service/middleware"
 )
 
 func registerAgentRoutes(mux *http.ServeMux, ctrl controllers.AgentController) {
@@ -31,6 +31,10 @@ func registerAgentRoutes(mux *http.ServeMux, ctrl controllers.AgentController) {
 	middleware.HandleFuncWithValidation(mux, "GET /orgs/{orgName}/projects/{projName}/agents", ctrl.ListAgents)
 	middleware.HandleFuncWithValidation(mux, "POST /orgs/{orgName}/utils/generate-name", ctrl.GenerateName)
 	middleware.HandleFuncWithValidation(mux, "GET /orgs/{orgName}/projects/{projName}/agents/{agentName}", ctrl.GetAgent)
+	middleware.HandleFuncWithValidation(mux, "PUT /orgs/{orgName}/projects/{projName}/agents/{agentName}", ctrl.UpdateAgentBasicInfo)
+	middleware.HandleFuncWithValidation(mux, "PUT /orgs/{orgName}/projects/{projName}/agents/{agentName}/build-parameters", ctrl.UpdateAgentBuildParameters)
+	middleware.HandleFuncWithValidation(mux, "GET /orgs/{orgName}/projects/{projName}/agents/{agentName}/resource-configs", ctrl.GetAgentResourceConfigs)
+	middleware.HandleFuncWithValidation(mux, "PUT /orgs/{orgName}/projects/{projName}/agents/{agentName}/resource-configs", ctrl.UpdateAgentResourceConfigs)
 	middleware.HandleFuncWithValidation(mux, "DELETE /orgs/{orgName}/projects/{projName}/agents/{agentName}", ctrl.DeleteAgent)
 	middleware.HandleFuncWithValidation(mux, "POST /orgs/{orgName}/projects/{projName}/agents/{agentName}/builds", ctrl.BuildAgent)
 	middleware.HandleFuncWithValidation(mux, "GET /orgs/{orgName}/projects/{projName}/agents/{agentName}/builds", ctrl.ListAgentBuilds)
@@ -38,6 +42,9 @@ func registerAgentRoutes(mux *http.ServeMux, ctrl controllers.AgentController) {
 	middleware.HandleFuncWithValidation(mux, "GET /orgs/{orgName}/projects/{projName}/agents/{agentName}/builds/{buildName}/build-logs", ctrl.GetBuildLogs)
 	middleware.HandleFuncWithValidation(mux, "POST /orgs/{orgName}/projects/{projName}/agents/{agentName}/deployments", ctrl.DeployAgent)
 	middleware.HandleFuncWithValidation(mux, "GET /orgs/{orgName}/projects/{projName}/agents/{agentName}/deployments", ctrl.GetAgentDeployments)
+	middleware.HandleFuncWithValidation(mux, "POST /orgs/{orgName}/projects/{projName}/agents/{agentName}/deployments/state", ctrl.UpdateDeploymentState)
 	middleware.HandleFuncWithValidation(mux, "GET /orgs/{orgName}/projects/{projName}/agents/{agentName}/endpoints", ctrl.GetAgentEndpoints)
 	middleware.HandleFuncWithValidation(mux, "GET /orgs/{orgName}/projects/{projName}/agents/{agentName}/configurations", ctrl.GetAgentConfigurations)
+	middleware.HandleFuncWithValidation(mux, "POST /orgs/{orgName}/projects/{projName}/agents/{agentName}/metrics", ctrl.GetAgentMetrics)
+	middleware.HandleFuncWithValidation(mux, "POST /orgs/{orgName}/projects/{projName}/agents/{agentName}/runtime-logs", ctrl.GetAgentRuntimeLogs)
 }

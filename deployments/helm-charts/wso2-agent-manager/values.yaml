@@ -1,0 +1,474 @@
+# Default values for agent-management-platform
+global:
+  imagePullSecrets: []
+  storageClass: ""
+
+# PostgreSQL Database Configuration
+postgresql:
+  enabled: true
+  external:
+    host: ""
+    port: 5432
+    database: agentmanager
+    username: agentmanager
+    password: ""
+    existingSecret: ""
+    existingSecretPasswordKey: "password"
+  # Image configuration - use stable PostgreSQL 16 image
+  auth:
+    database: agentmanager
+    username: agentmanager
+    password: "agentmanager"
+  primary:
+    persistence:
+      enabled: true
+      size: 10Gi
+    resources:
+      requests:
+        memory: 256Mi
+        cpu: 250m
+      limits:
+        memory: 512Mi
+        cpu: 500m
+
+# Agent Manager Service Configuration
+agentManagerService:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: ghcr.io/wso2/amp-api
+    tag: "0.0.0-dev"
+    pullPolicy: IfNotPresent
+
+  service:
+    type: LoadBalancer
+    port: 9000
+    targetPort: 8080
+    annotations: {}
+
+  gatewayMgtService:
+    type: LoadBalancer
+    port: 9243
+    targetPort: 9243
+
+  # Internal server configuration
+  internalServer:
+    # Enable TLS for the internal server. When false, serves plain HTTP.
+    tlsEnabled: true
+
+  observer:
+    url: "http://observer.openchoreo-observability-plane.svc.cluster.local:8080"
+    username: "admin"
+    password: "admin"
+
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 250m
+    limits:
+      memory: 512Mi
+      cpu: 500m
+
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: ~
+
+  # Health checks
+  livenessProbe:
+    tcpSocket:
+      port: 8080
+    initialDelaySeconds: 15
+    periodSeconds: 10
+
+  readinessProbe:
+      tcpSocket:
+        port: 8080
+      initialDelaySeconds: 5
+      periodSeconds: 10
+
+  # Application configuration
+  config:
+    serverHost: "0.0.0.0"
+    logLevel: "INFO"
+    autoMaxProcsEnabled: "true"
+    authHeader: "Authorization"
+    dbOperationTimeout: 30
+    healthCheckTimeout: 5
+    corsAllowedOrigin: "*"
+    observerURL: "http://observer.openchoreo-observability-plane.svc.cluster.local:8080"
+
+    # TLS Configuration
+    tlsEnabled: false
+  
+    # API Key configuration
+    apiKey:
+      header: "X-API-Key"
+      value: "abc-def-123"
+      existingSecret: ""
+      existingSecretKey: "api-key"
+
+    # Encryption key for secrets at rest (hex-encoded 32-byte AES-256 key)
+    # Must be exactly 64 hex characters. Auto-generated if not provided.
+    encryptionKey:
+      value: ""
+      existingSecret: ""
+      existingSecretKey: "encryption-key"
+
+    # Kubeconfig (empty for in-cluster, or provide config)
+    kubeconfig: ""
+
+    # OpenTelemetry configuration
+    otel:
+      traceContent: "true"
+      exporterEndpoint: "http://obs-gateway-gateway-gateway-runtime.openchoreo-data-plane.svc.cluster.local:22893/otel"
+
+    # Key Manager configuration
+    keyManager:
+      issuer: "http://thunder.amp.localhost:8080"
+      audience: "amp-console-client,amp-api-client,amp-publisher-*,amctl,am-mcp"
+      jwksUrl: "http://amp-thunder-extension-service.amp-thunder.svc.cluster.local:8090/oauth2/jwks"
+
+    # Externally reachable base URL of this service.
+    # Used as the `resource` identifier in RFC 9728 protected resource metadata.
+    serverPublicURL: "http://localhost:9000"
+
+    # Comma-separated list of OAuth 2.0 authorization server URLs advertised
+    # in RFC 9728 protected resource metadata. Each entry must be an absolute
+    # http/https URL. Validated at startup. Required for the well-known
+    # endpoint to serve.
+    oauthAuthorizationServers: "http://thunder.amp.localhost:8080"
+
+    # On-premise deployment flag
+    isOnPremDeployment: "true"
+
+    # OIDC configuration for Thunder integration
+    oidc:
+      tokenUrl: "http://amp-thunder-extension-service.amp-thunder.svc.cluster.local:8090/oauth2/token"
+      clientId: "amp-api-client"
+      clientSecret: "amp-api-client-secret"
+    # JWT Signing configuration
+    jwtSigning:
+      privateKeyPath: "/app/keys/private.pem"
+      publicKeysConfig: "/app/keys/public-keys-config.json"
+      activeKeyId: "key-1"
+      defaultExpiry: "8760h"
+      issuer: "agent-manager-service"
+      defaultEnvironment: "default"
+    # GitHub configuration for repository API access
+    github:
+      token: ""
+      existingSecret: ""
+      existingSecretKey: "github-token"
+    
+    # OpenChoreo API configuration
+    openChoreo:
+      baseURL: "http://openchoreo-api.openchoreo-control-plane:8080"
+
+    # Secret Manager configuration
+    secretManager:
+      provider: "openbao"
+      baseURL: ""
+
+    # OpenBao KV store configuration (for user deployment secrets)
+    openbao:
+      # OpenBao URL (uses the default OpenBao that comes with OpenChoreo)
+      url: "http://openbao.openbao.svc.cluster.local:8200"
+      # KV secrets engine path
+      path: "secret"
+      version: "v2"
+      # OpenBao token (for dev mode, use "root")
+      # For production, use existingSecret to reference a secret containing the token
+      token: "root"
+      existingSecret: ""
+      existingSecretKey: "openbao-token"
+
+    # Workflow Plane OpenBao configuration (for Git Secrets)
+    # Used to fetch git credentials for private repository access
+    workflowPlaneOpenbao:
+      # Workflow plane OpenBao URL
+      url: "http://openbao.openbao.svc.cluster.local:8200"
+      # OpenBao token
+      token: "root"
+      existingSecret: ""
+      existingSecretKey: "openbao-token"
+
+    # Thunder admin API configuration (for per-org publisher credential provisioning)
+    # When baseURL is empty, the static amp-publisher-client credentials are used.
+    thunder:
+      # Thunder API base URL
+      baseURL: "http://amp-thunder-extension-service.amp-thunder.svc.cluster.local:8090"
+      # OAuth2 client ID of the system app (with Administrator role)
+      clientId: "amp-system-client"
+      # OAuth2 client secret of the system app
+      clientSecret: "amp-system-client-secret"
+      # Reference to an existing secret containing the Thunder client secret
+      existingSecret: ""
+      existingSecretKey: "thunder-client-secret"
+  # Certificate configuration
+  certificates:
+    # REQUIRED: Kubernetes secret name containing TLS certificates
+    # Expected keys in secret: cert.pem (certificate), key.pem (private key)
+    # Example creation:
+    #   kubectl create secret generic amp-tls-certs \
+    #     --from-file=cert.pem=/path/to/cert.pem \
+    #     --from-file=key.pem=/path/to/key.pem
+    # For development, leave empty to generate self-signed certs at runtime (insecure)
+    certificatesSecret: ""
+
+  agentWorkload:
+    cors:
+      allowedOrigin: "http://localhost:3000"
+      allowedMethods: "GET,POST,PUT,DELETE,PATCH,OPTIONS"
+      allowedHeaders: "authorization,Content-Type,Origin"
+
+  # Pod-level configurations
+  podAnnotations: {}
+  podLabels: {}
+  # Pod security context - defaults to fsGroup: 1000 if not specified
+  # Note: If you encounter "too many open files" errors, this is typically caused by
+  # the Kubernetes client watching too many resources. Consider:
+  # 1. Reducing the number of watched resources in the application
+  # 2. Implementing resource filtering in watchers
+  # 3. Increasing limits at the node/cluster level
+  podSecurityContext: {}
+  # Container security context - defaults to secure settings if not specified
+  securityContext: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# Console (Frontend) Configuration
+console:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: ghcr.io/wso2/amp-console
+    tag: "0.0.0-dev"
+    pullPolicy: Always
+
+  service:
+    type: LoadBalancer
+    port: 3000
+    targetPort: 3000
+
+  resources:
+    requests:
+      memory: 128Mi
+      cpu: 100m
+    limits:
+      memory: 256Mi
+      cpu: 200m
+
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: ~
+
+  # Health checks
+  livenessProbe: null
+  readinessProbe: null
+
+  # Frontend configuration
+  config:
+    # Authentication (set to "" to disable)
+    auth:
+      clientId: "amp-console-client"
+      baseUrl: "http://thunder.amp.localhost:8080"
+      scopes: "openid profile email"
+      signInRedirectURL: "http://localhost:3000/login"
+      signOutRedirectURL: "http://localhost:3000/login"
+      existingSecret: ""
+      validateIDToken: "false"
+      clockTolerance: 300
+
+    # Disable auth for development
+    disableAuth: "false"
+
+    # Backend API URLs (will be auto-configured if empty)
+    apiBaseUrl: "http://localhost:9000"
+    # Traces Observer Service URL — browser calls this directly for trace data.
+    # Should point to the amp-traces-observer LoadBalancer or ingress URL.
+    obsApiBaseUrl: "http://localhost:9098"
+    # Gateway control plane URL for gateway setup commands (default: http://localhost:9243)
+    gatewayControlPlaneUrl: "host.docker.internal:9243"
+    # Gateway version for setup commands (default: v1.0.0)
+    gatewayVersion: "v1.0.0"
+    instrumentationUrl: "https://localhost:22894/otel"
+    # Guardrails catalog URL for fetching available guardrail policies
+    guardrailsCatalogUrl: "https://db720294-98fd-40f4-85a1-cc6a3b65bc9a-prod.e1-us-east-azure.choreoapis.dev/api-platform/policy-hub-api/policy-hub-public/v1.0/policies?categories=AI,Guardrails&limit=50"
+    # Guardrails definition base URL for fetching policy definitions
+    guardrailsDefinitionBaseUrl: "https://db720294-98fd-40f4-85a1-cc6a3b65bc9a-prod.e1-us-east-azure.choreoapis.dev/api-platform/policy-hub-api/policy-hub-public/v1.0/policies"
+
+  # Pod-level configurations
+  podAnnotations: {}
+  podLabels: {}
+  # Pod security context - optional, no defaults to allow image to use its own user
+  # If you need to set fsGroup or other pod-level security settings, specify them here
+  podSecurityContext: {}
+  # Container security context - defaults to secure settings (without runAsUser to allow image default)
+  # If you need to set runAsUser or other container-level security settings, specify them here
+  securityContext: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# Database Migration Job Configuration
+dbMigration:
+  enabled: true
+
+  image:
+    repository: ghcr.io/wso2/amp-api
+    tag: "0.0.0-dev"
+    pullPolicy: IfNotPresent
+
+  resources:
+    requests:
+      memory: 128Mi
+      cpu: 100m
+    limits:
+      memory: 256Mi
+      cpu: 200m
+      
+  backoffLimit: 3
+  podSecurityContext: {}
+  securityContext: {}
+
+# JWT Keys Generation Job Configuration
+jwtKeysGeneration:
+  enabled: true
+  backoffLimit: 3
+
+  resources:
+    requests:
+      memory: 64Mi
+      cpu: 50m
+    limits:
+      memory: 128Mi
+      cpu: 100m
+
+  # Security context for JWT keys generation job
+  # Allows root access for apk package installation (openssl, kubectl)
+  podSecurityContext:
+    runAsNonRoot: false
+    runAsUser: 0
+    fsGroup: 0
+  securityContext:
+    runAsNonRoot: false
+    runAsUser: 0
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    readOnlyRootFilesystem: false
+
+# TLS Certificates Generation Job Configuration
+tlsCertsGeneration:
+  enabled: true
+  backoffLimit: 3
+
+  resources:
+    requests:
+      memory: 64Mi
+      cpu: 50m
+    limits:
+      memory: 128Mi
+      cpu: 100m
+
+  # Security context for TLS certs generation job
+  # Allows root access for apk package installation (openssl, kubectl)
+  podSecurityContext:
+    runAsNonRoot: false
+    runAsUser: 0
+    fsGroup: 0
+  securityContext:
+    runAsNonRoot: false
+    runAsUser: 0
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    readOnlyRootFilesystem: false
+
+# JWT Signing Keys Configuration
+jwtSigning:
+  # Specify an existing secret containing JWT keys (optional)
+  # If not specified, keys will be auto-generated by the jwt-keys-generation job
+  existingSecret: ""
+
+# Ingress Configuration
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  hosts:
+  - host: amp.local
+    http:
+      paths:
+      - path: /v1/traces
+        pathType: Prefix
+        backend:
+          service:
+            name: data-prepper-external
+            port:
+              number: 21893
+
+      - path: /api/trace
+        pathType: Prefix
+        backend:
+          service:
+            name: amp-traces-observer-external
+            port:
+              number: 9098
+
+      - path: /api/v1
+        pathType: Prefix
+        backend:
+          service:
+            name: amp-api
+            port:
+              number: 8080
+
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: amp-console
+            port:
+              number: 3000
+  tls: []
+
+# ServiceAccount Configuration
+serviceAccount:
+  create: true
+  name: "agent-management-platform"
+  annotations: {}
+  automount: true
+
+# RBAC Configuration
+rbac:
+  create: true
+  # Rules for managing agents and k8s resources
+  # Full permissions for agent management operations
+  rules:
+    - apiGroups: ["*"]
+      resources: ["*"]
+      verbs: ["*"]
+
+# Global volume mounts and volumes (optional)
+volumeMounts: []
+volumes: []
+
+# Common labels to add to all resources
+commonLabels: {}

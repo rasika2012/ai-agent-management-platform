@@ -33,9 +33,9 @@ def clean_environment() -> Generator[None, None, None]:
 
     # Remove AMP-related environment variables
     amp_vars = [
-        "AMP_AGENT_NAME",
         "AMP_OTEL_ENDPOINT",
         "AMP_AGENT_API_KEY",
+        "AMP_AGENT_VERSION",
     ]
 
     for var in amp_vars:
@@ -57,7 +57,6 @@ def set_env_vars() -> Dict[str, str]:
         Dictionary with valid AMP configuration
     """
     return {
-        "AMP_AGENT_NAME": "test-app",
         "AMP_OTEL_ENDPOINT": "https://otel.example.com",
         "AMP_AGENT_API_KEY": "test-api-key",
     }

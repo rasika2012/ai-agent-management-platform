@@ -1,0 +1,149 @@
+name: Agent Manager API
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "agent-manager-service/**"
+      - ".github/workflows/agent-manager-service-pr-checks.yaml"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on:
+      - codebuild-wso2_agent-manager-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: ./.github/actions/setup-go
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          working-directory: agent-manager-service
+          args: --config .github/linters/.golangci.yaml
+
+  test:
+    name: Test
+    runs-on:
+      - codebuild-wso2_agent-manager-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: ./.github/actions/setup-go
+
+      - name: Start PostgreSQL
+        run: |
+          docker run -d --name postgres \
+            -e POSTGRES_USER=agentmanager \
+            -e POSTGRES_PASSWORD=agentmanager \
+            -e POSTGRES_DB=agentmanager \
+            -p 5432:5432 \
+            public.ecr.aws/docker/library/postgres:15-alpine
+
+      - name: Wait for PostgreSQL
+        run: |
+          until docker exec postgres pg_isready -U agentmanager; do
+            echo "Waiting for postgres..."
+            sleep 1
+          done
+        timeout-minutes: 2
+
+      - name: Get PostgreSQL host
+        id: postgres
+        run: |
+          POSTGRES_IP=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' postgres)
+          echo "host=${POSTGRES_IP}" >> "$GITHUB_OUTPUT"
+          echo "PostgreSQL IP: ${POSTGRES_IP}"
+
+      - name: Create test .env file
+        working-directory: ./agent-manager-service
+        run: |
+          cat > .env << EOF
+          DB_HOST=${{ steps.postgres.outputs.host }}
+          DB_PORT=5432
+          DB_USER=agentmanager
+          DB_PASSWORD=agentmanager
+          DB_NAME=agentmanager
+          SERVER_PORT=8080
+          JWT_SIGNING_ACTIVE_KEY_ID=key-1
+          JWT_SIGNING_PRIVATE_KEY_PATH=$(pwd)/keys/private.pem
+          JWT_SIGNING_PUBLIC_KEYS_CONFIG=$(pwd)/keys/public-keys-config.json
+          OPEN_CHOREO_BASE_URL=http://api.openchoreo.localhost:8080/api/v1
+          ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          EOF
+
+      - name: Run database migrations
+        working-directory: ./agent-manager-service
+        run: ENV_FILE_PATH=.env make dev-migrate
+
+      - name: Run tests
+        working-directory: ./agent-manager-service
+        run: make test
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs
+          path: agent-manager-service/localdata/test_output.log
+          retention-days: 7
+
+  build:
+    name: Build
+    runs-on:
+      - codebuild-wso2_agent-manager-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./agent-manager-service
+          file: ./agent-manager-service/Dockerfile
+          push: false
+          tags: agent-manager-service:pr-check
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  codegen-format:
+    name: Code Generation & Format Check
+    runs-on:
+      - codebuild-wso2_agent-manager-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: ./.github/actions/setup-go
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install wire
+        run: go install github.com/google/wire/cmd/wire@v0.7.0
+
+      - name: Install goimports
+        run: go install golang.org/x/tools/cmd/goimports@latest
+
+      - name: Install gofumpt
+        run: go install mvdan.cc/gofumpt@latest
+
+      - name: Install moq
+        run: go install github.com/matryer/moq@v0.5.3
+
+      - name: Run code generation and format check
+        working-directory: ./agent-manager-service
+        run: make codegenfmt-check

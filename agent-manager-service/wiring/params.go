@@ -1,4 +1,4 @@
-// Copyright (c) 2025, WSO2 LLC. (https://www.wso2.com).
+// Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com).
 //
 // WSO2 LLC. licenses this file to you under the Apache License,
 // Version 2.0 (the "License"); you may not use this file except
@@ -17,27 +17,73 @@
 package wiring
 
 import (
-	observabilitysvc "github.com/wso2/ai-agent-management-platform/agent-manager-service/clients/observabilitysvc"
-	clients "github.com/wso2/ai-agent-management-platform/agent-manager-service/clients/openchoreosvc"
-	traceobserversvc "github.com/wso2/ai-agent-management-platform/agent-manager-service/clients/traceobserversvc"
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/config"
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/controllers"
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/middleware/jwtassertion"
+	"encoding/hex"
+	"fmt"
+	"log/slog"
+	"strings"
+
+	"gorm.io/gorm"
+
+	observabilitysvc "github.com/wso2/agent-manager/agent-manager-service/clients/observabilitysvc"
+	occlient "github.com/wso2/agent-manager/agent-manager-service/clients/openchoreosvc/client"
+	"github.com/wso2/agent-manager/agent-manager-service/clients/secretmanagersvc"
+	"github.com/wso2/agent-manager/agent-manager-service/config"
+	"github.com/wso2/agent-manager/agent-manager-service/controllers"
+	"github.com/wso2/agent-manager/agent-manager-service/middleware/jwtassertion"
+	"github.com/wso2/agent-manager/agent-manager-service/services"
+	"github.com/wso2/agent-manager/agent-manager-service/websocket"
 )
 
+// AppParams contains all wired application dependencies
 type AppParams struct {
-	AuthMiddleware          jwtassertion.Middleware
-	AgentController         controllers.AgentController
-	InfraResourceController controllers.InfraResourceController
-	BuildCIController       controllers.BuildCIController
-	ObservabilityController controllers.ObservabilityController
+	// Middleware
+	AuthMiddleware jwtassertion.Middleware
+	Logger         *slog.Logger
+
+	// Controllers
+	AgentController                  controllers.AgentController
+	InfraResourceController          controllers.InfraResourceController
+	AgentTokenController             controllers.AgentTokenController
+	RepositoryController             controllers.RepositoryController
+	EnvironmentController            controllers.EnvironmentController
+	GatewayController                controllers.GatewayController
+	LLMController                    controllers.LLMController
+	LLMDeploymentController          controllers.LLMDeploymentController
+	LLMProviderAPIKeyController      controllers.LLMProviderAPIKeyController
+	LLMProxyAPIKeyController         controllers.LLMProxyAPIKeyController
+	LLMProxyDeploymentController     controllers.LLMProxyDeploymentController
+	WebSocketController              controllers.WebSocketController
+	GatewayInternalController        controllers.GatewayInternalController
+	MonitorController                controllers.MonitorController
+	MonitorScoresController          controllers.MonitorScoresController
+	MonitorScoresPublisherController controllers.MonitorScoresPublisherController
+	EvaluatorController              controllers.EvaluatorController
+	CatalogController                controllers.CatalogController
+	AgentConfigurationController     controllers.AgentConfigurationController
+	GitSecretController              controllers.GitSecretController
+	MonitorScheduler                 services.MonitorSchedulerService
+
+	// Services
+	LLMTemplateStore         *services.LLMTemplateStore
+	InfraResourceManager     services.InfraResourceManager
+	AgentManagerService      services.AgentManagerService
+	AgentTokenManagerService services.AgentTokenManagerService
+
+	// Clients
+	OpenChoreoClient occlient.OpenChoreoClient
+
+	// WebSocket
+	WebSocketManager *websocket.Manager
+
+	// Database
+	DB *gorm.DB
 }
 
 // TestClients contains all mock clients needed for testing
 type TestClients struct {
-	OpenChoreoSvcClient    clients.OpenChoreoSvcClient
+	OpenChoreoClient       occlient.OpenChoreoClient
 	ObservabilitySvcClient observabilitysvc.ObservabilitySvcClient
-	TraceObserverClient    traceobserversvc.TraceObserverClient
+	SecretMgmtClient       secretmanagersvc.SecretManagementClient
 }
 
 func ProvideConfigFromPtr(config *config.Config) config.Config {
@@ -45,5 +91,26 @@ func ProvideConfigFromPtr(config *config.Config) config.Config {
 }
 
 func ProvideAuthMiddleware(config config.Config) jwtassertion.Middleware {
-	return jwtassertion.JWTAuthMiddleware(config.AuthHeader)
+	var resourceMetadataURL string
+	if config.ServerPublicURL != "" {
+		resourceMetadataURL = strings.TrimRight(config.ServerPublicURL, "/") +
+			"/.well-known/oauth-protected-resource"
+	}
+	return jwtassertion.JWTAuthMiddleware(config.AuthHeader, resourceMetadataURL)
+}
+
+func ProvideJWTSigningConfig(config config.Config) config.JWTSigningConfig {
+	return config.JWTSigning
+}
+
+// ProvideEncryptionKey decodes the hex-encoded encryption key from config.
+func ProvideEncryptionKey(cfg config.Config) ([]byte, error) {
+	key, err := hex.DecodeString(cfg.EncryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode ENCRYPTION_KEY: %w", err)
+	}
+	if len(key) != 32 {
+		return nil, fmt.Errorf("ENCRYPTION_KEY must decode to exactly 32 bytes (got %d)", len(key))
+	}
+	return key, nil
 }

@@ -16,7 +16,10 @@
  * under the License.
  */
 
-import { useListAgentDeployments } from "@agent-management-platform/api-client";
+import {
+  useGetAgent,
+  useListAgentDeployments,
+} from "@agent-management-platform/api-client";
 import {
   absoluteRouteMap,
   Environment,
@@ -33,7 +36,6 @@ import {
   Typography,
   useTheme,
 } from "@wso2/oxygen-ui";
-import { TabStatus } from "../LinkTab";
 import {
   CheckCircle as CheckCircleRounded,
   Circle as CircleOutlined,
@@ -42,10 +44,21 @@ import {
   Rocket as RocketLaunchOutlined,
   FlaskConical as TryOutlined,
   Workflow,
+  Link as LinkOutlined,
+  PauseCircle,
 } from "@wso2/oxygen-ui-icons-react";
 import { NoDataFound, TextInput } from "@agent-management-platform/views";
-import dayjs from "dayjs";
+import { formatDistanceToNow } from "date-fns";
 import { generatePath, Link } from "react-router-dom";
+
+export enum DeploymentStatus {
+  ACTIVE = "active",
+  INACTIVE = "not-deployed",
+  DEPLOYING = "in-progress",
+  ERROR = "error",
+  SUSPENDED = "suspended",
+  FAILED = "failed",
+}
 
 export interface EnvironmentCardProps {
   environment?: Environment;
@@ -56,12 +69,12 @@ export interface EnvironmentCardProps {
   actions?: React.ReactNode;
 }
 
-export const EnvStatus = ({ status }: { status?: TabStatus }) => {
+export const EnvStatus = ({ status }: { status?: DeploymentStatus, }) => {
   const theme = useTheme();
   if (!status) {
     return null;
   }
-  if (status === TabStatus.ACTIVE) {
+  if (status === DeploymentStatus.ACTIVE) {
     return (
       <Chip
         icon={
@@ -74,7 +87,7 @@ export const EnvStatus = ({ status }: { status?: TabStatus }) => {
       />
     );
   }
-  if (status === TabStatus.INACTIVE) {
+  if (status === DeploymentStatus.INACTIVE) {
     return (
       <Chip
         icon={<CircleOutlined size={16} color={theme.palette.text.disabled} />}
@@ -85,7 +98,7 @@ export const EnvStatus = ({ status }: { status?: TabStatus }) => {
       />
     );
   }
-  if (status === TabStatus.DEPLOYING) {
+  if (status === DeploymentStatus.DEPLOYING) {
     return (
       <Chip
         icon={<CircularProgress size={16} color="warning" />}
@@ -96,9 +109,35 @@ export const EnvStatus = ({ status }: { status?: TabStatus }) => {
       />
     );
   }
-  if (status === TabStatus.ERROR) {
+  if (status === DeploymentStatus.ERROR) {
     return <Chip variant="outlined" size="small" label="Error" color="error" />;
   }
+  if (status === DeploymentStatus.FAILED) {
+    return <Chip variant="outlined" size="small" label="Error" color="error" />;
+  }
+  if (status === DeploymentStatus.SUSPENDED) {
+    return (
+      <Chip
+        icon={<PauseCircle size={16} />}
+        variant="outlined"
+        size="small"
+        label="Suspended"
+        color="default"
+      />
+    );
+  }
+};
+
+const formatRelativeTime = (value?: string | number | Date) => {
+  if (!value) {
+    return "—";
+  }
+
+  const date = value instanceof Date ? value : new Date(value);
+
+  return Number.isNaN(date.getTime())
+    ? "—"
+    : formatDistanceToNow(date, { addSuffix: true });
 };
 
 export const EnvironmentCard = (props: EnvironmentCardProps) => {
@@ -114,6 +153,11 @@ export const EnvironmentCard = (props: EnvironmentCardProps) => {
         enabled: !!orgId && !!projectId && !!agentId && !external,
       }
     );
+  const { data: agent } = useGetAgent({
+    orgName: orgId,
+    projName: projectId,
+    agentName: agentId,
+  });
   const currentDiployment = deployments?.[environment?.name ?? "default"];
   const theme = useTheme();
   if (isDeploymentsLoading) {
@@ -137,7 +181,27 @@ export const EnvironmentCard = (props: EnvironmentCardProps) => {
             justifyContent="space-between"
             alignItems="center"
           >
-            <Typography variant="h6">Default Environment</Typography>
+            <Box display="flex" flexDirection="row" gap={1} alignItems="center">
+              <Typography variant="h6">Default Environment</Typography>
+              <Chip
+                icon={
+                  <LinkOutlined size={16} color={theme.palette.success.main} />
+                }
+                variant="outlined"
+                size="small"
+                label="Registered"
+                color="success"
+              />
+              <Box
+                display="flex"
+                flexDirection="row"
+                gap={1}
+                alignItems="center"
+              >
+                <Clock size={16} color={theme.palette.text.secondary} />
+                {formatRelativeTime(agent?.createdAt)}
+              </Box>
+            </Box>
             <Box display="flex" flexDirection="row" gap={1} alignItems="center">
               {actions}
               <Button
@@ -146,11 +210,12 @@ export const EnvironmentCard = (props: EnvironmentCardProps) => {
                 component={Link}
                 to={generatePath(
                   absoluteRouteMap.children.org.children.projects.children
-                    .agents.children.observe.children.traces.path,
+                    .agents.children.environment.children.observability.children.traces.path,
                   {
                     orgId,
                     projectId,
                     agentId,
+                    envId: environment?.name ?? "",
                   }
                 )}
                 color="primary"
@@ -167,11 +232,6 @@ export const EnvironmentCard = (props: EnvironmentCardProps) => {
   return (
     <Card
       variant="outlined"
-      sx={{
-        "&.MuiCard-root": {
-          backgroundColor: "background.paper",
-        },
-      }}
     >
       <CardContent>
         <Box
@@ -183,9 +243,11 @@ export const EnvironmentCard = (props: EnvironmentCardProps) => {
           alignItems="center"
         >
           <Box display="flex" flexDirection="row" gap={1} alignItems="center">
-            <Typography variant="h6">{environment?.displayName}</Typography>
-            <EnvStatus status={currentDiployment?.status as TabStatus} />
-            {currentDiployment?.status === TabStatus.ACTIVE && (
+            <Typography variant="h6">
+              {environment?.displayName} Environment
+            </Typography>
+            <EnvStatus status={currentDiployment?.status as DeploymentStatus} />
+            {currentDiployment?.status === DeploymentStatus.ACTIVE && (
               <Box
                 display="flex"
                 flexDirection="row"
@@ -193,12 +255,12 @@ export const EnvironmentCard = (props: EnvironmentCardProps) => {
                 alignItems="center"
               >
                 <Clock size={16} color={theme.palette.text.secondary} />
-                {dayjs(currentDiployment?.lastDeployed).fromNow()}
+                {formatRelativeTime(currentDiployment?.lastDeployed)}
               </Box>
             )}
           </Box>
           <Box display="flex" flexDirection="row" gap={1} alignItems="center">
-            {currentDiployment?.status === TabStatus.ACTIVE && (
+            {currentDiployment?.status === DeploymentStatus.ACTIVE && (
               <>
                 <Button
                   startIcon={<TryOutlined size={16} />}
@@ -218,7 +280,7 @@ export const EnvironmentCard = (props: EnvironmentCardProps) => {
                   color="primary"
                   size="small"
                 >
-                  Try Out
+                  Try It
                 </Button>
                 <Button
                   startIcon={<Workflow size={16} />}
@@ -232,7 +294,7 @@ export const EnvironmentCard = (props: EnvironmentCardProps) => {
                       orgId,
                       projectId,
                       agentId,
-                      envId: environment?.name ?? "",
+                      envId: environment?.name ?? "default",
                     }
                   )}
                   color="primary"
@@ -255,25 +317,33 @@ export const EnvironmentCard = (props: EnvironmentCardProps) => {
           pt={2}
           alignItems="center"
         >
-          {currentDiployment.status === TabStatus.INACTIVE && (
+          {currentDiployment.status === DeploymentStatus.INACTIVE && (
             <NoDataFound
+              disableBackground
               message="Not Deployed"
-              icon={<RocketLaunchOutlined size={32}  />}
+              icon={<RocketLaunchOutlined size={32} />}
             />
           )}
-          {currentDiployment.status === TabStatus.DEPLOYING && (
+          {currentDiployment.status === DeploymentStatus.DEPLOYING && (
             <NoDataFound
+              disableBackground
               message="Deploying..."
               icon={<CircularProgress size={32} />}
             />
           )}
-          {currentDiployment.status === TabStatus.ERROR && (
+          {currentDiployment.status === DeploymentStatus.ERROR && (
             <NoDataFound
+              disableBackground
               message="Deployment Failed"
-              icon={<ErrorOutlineRounded color={theme.palette.error.main} size={32}  />}
+              icon={
+                <ErrorOutlineRounded
+                  color={theme.palette.error.main}
+                  size={32}
+                />
+              }
             />
           )}
-          {currentDiployment.status === TabStatus.ACTIVE && (
+          {currentDiployment.status === DeploymentStatus.ACTIVE && (
             <Box
               display="flex"
               flexGrow={1}
@@ -282,19 +352,19 @@ export const EnvironmentCard = (props: EnvironmentCardProps) => {
               gap={4}
               alignItems="flex-start"
             >
-                {currentDiployment?.endpoints.map((endpoint) => (
-                  <TextInput
-                    slotProps={{
-                      input: {
-                        readOnly: true,
-                      },
-                    }}
-                    key={endpoint.url}
-                    label="URL"
-                    value={endpoint.url}
-                    fullWidth
-                  />
-                ))}
+              {currentDiployment?.endpoints?.map((endpoint) => (
+                <TextInput
+                  slotProps={{
+                    input: {
+                      readOnly: true,
+                    },
+                  }}
+                  key={endpoint.url}
+                  label="URL"
+                  value={endpoint.url}
+                  fullWidth
+                />
+              ))}
             </Box>
           )}
         </Box>

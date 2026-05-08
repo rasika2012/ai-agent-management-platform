@@ -16,42 +16,176 @@
  * under the License.
  */
 
+import type {
+  TraceListResponse,
+  TraceExportResponse,
+  Span,
+  TraceSpanSummaryListResponse,
+} from "@agent-management-platform/types";
+import { httpGETObserver } from "../utils";
 
+// Params for direct traces-observer-service calls.
+export interface TraceObserverListParams {
+  organization: string;
+  project: string;
+  component: string;
+  environment: string;
+  startTime: string;
+  endTime: string;
+  limit?: number;
+  sortOrder?: 'asc' | 'desc';
+}
 
-import { GetTraceListPathParams, GetTracePathParams, TraceDetailsResponse, TraceListResponse } from "@agent-management-platform/types";
-import { httpGET, OBS_SERVICE_BASE } from "../utils";
+export interface TraceObserverSpanListParams {
+  traceId: string;
+  organization: string;
+  project?: string;
+  component?: string;
+  environment?: string;
+  startTime: string;
+  endTime: string;
+  limit?: number;
+  sortOrder?: "asc" | "desc";
+}
 
-export async function getTrace(
-    params: GetTracePathParams, 
-    getToken?: () => Promise<string>
-): Promise<TraceDetailsResponse>{
-    const { orgName = "default", projName = "default", agentName, envId, traceId } = params;
-    const token = getToken ? await getToken() : undefined;
-    // to do: remove logs once api ready
-    console.log('getTrace', orgName, projName, envId);
-    const searchParams = { traceId , serviceName: agentName };
-    const res = await httpGET(
-        `${OBS_SERVICE_BASE}/trace`,
-        { searchParams, token , options: { useObsPlaneHostApi: true } },
-    );
+export interface TraceObserverSpanDetailParams {
+  traceId: string;
+  spanId: string;
+}
 
-    if (!res.ok) throw await res.json();
-    return res.json();
+function assertRequired(value: string, field: string): void {
+  if (!value?.trim()) throw new Error(`Missing required parameters: ${field}`);
 }
 
 export async function getTraceList(
-    params: GetTraceListPathParams, 
-    getToken?: () => Promise<string>
-): Promise<TraceListResponse>{
-    const { orgName = "default", projName = "default", agentName, envId, startTime, endTime } = params;
-    const token = getToken ? await getToken() : undefined;
-    // to do: remove logs once api ready
-    console.log('getTraceList', orgName, projName, envId);
-    const searchParams = { startTime, endTime, serviceName: agentName };
-    const res = await httpGET(
-        `${OBS_SERVICE_BASE}/traces`,
-        { searchParams, token , options: { useObsPlaneHostApi: true } },
-    );
-    if (!res.ok) throw await res.json();
-    return res.json();
+  params: TraceObserverListParams,
+  getToken?: () => Promise<string>
+): Promise<TraceListResponse> {
+  const {
+    organization,
+    project,
+    component,
+    environment,
+    startTime,
+    endTime,
+    limit,
+    sortOrder,
+  } = params;
+  assertRequired(organization, "organization");
+  assertRequired(project, "project");
+  assertRequired(component, "component");
+  assertRequired(environment, "environment");
+  assertRequired(startTime, "startTime");
+  assertRequired(endTime, "endTime");
+
+  const token = getToken ? await getToken() : undefined;
+
+  const searchParams: Record<string, string> = {
+    organization,
+    project,
+    agent: component,
+    environment,
+    startTime,
+    endTime,
+  };
+  if (limit !== undefined) searchParams.limit = limit.toString();
+  if (sortOrder) searchParams.sortOrder = sortOrder;
+
+  const res = await httpGETObserver("/api/v1/traces", { searchParams, token });
+  return res.json();
+}
+
+export async function exportTraces(
+  params: TraceObserverListParams,
+  getToken?: () => Promise<string>
+): Promise<TraceExportResponse> {
+  const {
+    organization,
+    project,
+    component,
+    environment,
+    startTime,
+    endTime,
+    limit,
+    sortOrder,
+  } = params;
+  assertRequired(organization, "organization");
+  assertRequired(project, "project");
+  assertRequired(component, "component");
+  assertRequired(environment, "environment");
+  assertRequired(startTime, "startTime");
+  assertRequired(endTime, "endTime");
+
+  const token = getToken ? await getToken() : undefined;
+
+  const searchParams: Record<string, string> = {
+    organization,
+    project,
+    agent: component,
+    environment,
+    startTime,
+    endTime,
+  };
+  if (limit !== undefined) searchParams.limit = limit.toString();
+  if (sortOrder) searchParams.sortOrder = sortOrder;
+
+  const res = await httpGETObserver("/api/v1/traces/export", { searchParams, token });
+  return res.json();
+}
+
+export async function listTraceSpans(
+  params: TraceObserverSpanListParams,
+  getToken?: () => Promise<string>,
+): Promise<TraceSpanSummaryListResponse> {
+  const {
+    traceId,
+    organization,
+    project,
+    component,
+    environment,
+    startTime,
+    endTime,
+    limit,
+    sortOrder,
+  } = params;
+
+  assertRequired(traceId, "traceId");
+  assertRequired(organization, "organization");
+  assertRequired(startTime, "startTime");
+  assertRequired(endTime, "endTime");
+
+  const token = getToken ? await getToken() : undefined;
+
+  const searchParams: Record<string, string> = {
+    organization,
+    startTime,
+    endTime,
+  };
+  if (project) searchParams.project = project;
+  if (component) searchParams.agent = component;
+  if (environment) searchParams.environment = environment;
+  if (limit !== undefined) searchParams.limit = limit.toString();
+  if (sortOrder) searchParams.sortOrder = sortOrder;
+
+  const res = await httpGETObserver(`/api/v1/traces/${encodeURIComponent(traceId)}/spans`, {
+    searchParams,
+    token,
+  });
+  return res.json();
+}
+
+export async function getSpanDetail(
+  params: TraceObserverSpanDetailParams,
+  getToken?: () => Promise<string>,
+): Promise<Span> {
+  const { traceId, spanId } = params;
+  assertRequired(traceId, "traceId");
+  assertRequired(spanId, "spanId");
+
+  const token = getToken ? await getToken() : undefined;
+  const res = await httpGETObserver(
+    `/api/v1/traces/${encodeURIComponent(traceId)}/spans/${encodeURIComponent(spanId)}`,
+    { token },
+  );
+  return res.json();
 }

@@ -16,274 +16,248 @@
  * under the License.
  */
 
-import {
-  Paperclip as AttachFile,
-  CheckCircle,
-  Circle,
-  Settings,
-} from "@wso2/oxygen-ui-icons-react";
+import { CheckCircle, Circle } from "@wso2/oxygen-ui-icons-react";
 import {
   Alert,
   Box,
-  Button,
-  Card,
-  CardContent,
   Collapse,
   Divider,
   Typography,
-  useTheme,
+  Form,
+  TextField,
 } from "@wso2/oxygen-ui";
-import { useCallback, useRef } from "react";
-import { useFormContext, useWatch } from "react-hook-form";
-import { TextInput } from "@agent-management-platform/views";
+import { useCallback } from "react";
+import type { CreateAgentFormValues } from "../form/schema";
+import type { InputInterfaceType } from "@agent-management-platform/types";
 
-const inputInterfaces = [
+interface InputInterfaceProps {
+  formData: CreateAgentFormValues;
+  setFormData: React.Dispatch<React.SetStateAction<CreateAgentFormValues>>;
+  errors: Record<string, string | undefined>;
+  setFieldError: (
+    field: keyof CreateAgentFormValues,
+    error: string | undefined
+  ) => void;
+  validateField: (
+    field: keyof CreateAgentFormValues,
+    value: unknown,
+    fullData?: CreateAgentFormValues
+  ) => string | undefined;
+}
+
+const inputInterfaces: Array<{
+  label: string;
+  description: string;
+  default: boolean;
+  value: InputInterfaceType;
+}> = [
   {
     label: "Chat Agent",
-    description: "Interactive chat agent following the interface specification",
+    description: "Standard chat interface with /chat endpoint on port 8000",
     default: true,
     value: "DEFAULT",
-    icon: <CheckCircle />,
   },
   {
-    label: "Agent API",
+    label: "Custom API Agent",
     description:
-      "Agent exposed as an API, with a user-specified OpenAPI specification and port configuration.",
+      "Custom HTTP API with user-specified OpenAPI specification and port configuration",
     default: false,
     value: "CUSTOM",
-    icon: <Settings />,
   },
 ];
 
-export const InputInterface = () => {
-  const {
-    setValue,
-    control,
-    register,
-    formState: { errors },
-  } = useFormContext();
-  const interfaceType =
-    useWatch({ control, name: "interfaceType" }) || "DEFAULT";
-  const port = useWatch({ control, name: "port" }) as unknown as string;
-  const openApiFileName = useWatch({
-    control,
-    name: "openApiFileName",
-  }) as string;
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const theme = useTheme();
-  const handleSelect = useCallback(
-    (value: string) => {
-      setValue("interfaceType", value, { shouldValidate: true });
-      if (value === "DEFAULT") {
-        setValue("openApiFileName", "", { shouldValidate: true });
-        setValue("openApiContent", "", { shouldValidate: true });
-        setValue("port", "" as unknown as number, { shouldValidate: true });
-        setValue("basePath", "/", { shouldValidate: true });
+export const InputInterface = ({
+  formData,
+  setFormData,
+  errors,
+  setFieldError,
+  validateField,
+}: InputInterfaceProps) => {
+  const handleFieldChange = useCallback(
+    (field: keyof CreateAgentFormValues, value: unknown) => {
+      // First update the form data
+      let newData: CreateAgentFormValues | null = null;
+      setFormData(prevData => {
+        newData = { ...prevData, [field]: value } as CreateAgentFormValues;
+        return newData;
+      });
+      // Then validate with the full updated data and set error (side effect outside updater)
+      if (newData) {
+        const error = validateField(field, value, newData);
+        setFieldError(field, error);
       }
     },
-    [setValue]
+    [setFormData, validateField, setFieldError]
+  );
+
+  const handleSelect = useCallback(
+    (value: InputInterfaceType) => {
+      // Compute new data outside the updater
+      setFormData(prevData => {
+        const newData = {
+          ...prevData,
+          interfaceType: value,
+          ...(value === "DEFAULT" ? {
+            openApiPath: "",
+            port: "" as unknown as number,
+            basePath: "/",
+          } : {}),
+        };
+        return newData;
+      });
+
+      // Perform all validations outside the updater
+      setFormData(currentData => {
+        const error = validateField('interfaceType', value, currentData);
+        setFieldError('interfaceType', error);
+        
+        if (value === 'CUSTOM') {
+          // Validate required fields for CUSTOM interface
+          const portError = validateField('port', currentData.port, currentData);
+          setFieldError('port', portError);
+          
+          const openApiError = validateField('openApiPath', currentData.openApiPath, currentData);
+          setFieldError('openApiPath', openApiError);
+          
+          const basePathError = validateField('basePath', currentData.basePath, currentData);
+          setFieldError('basePath', basePathError);
+        } else {
+          // Clear validation errors when switching to DEFAULT
+          setFieldError('port', undefined);
+          setFieldError('openApiPath', undefined);
+          setFieldError('basePath', undefined);
+        }
+        
+        return currentData;
+      });
+    },
+    [setFormData, validateField, setFieldError]
   );
 
   const handlePortChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const next = e.target.value;
       if (/^\d*$/.test(next)) {
-        setValue(
-          "port",
-          next === "" ? ("" as unknown as number) : Number(next),
-          { shouldValidate: true }
-        );
+        handleFieldChange('port', next === "" ? ("" as unknown as number) : Number(next));
       }
     },
-    [setValue]
-  );
-
-  const handleFilePick = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-
-      // Validate file size (max 2MB)
-      const MAX_FILE_SIZE = 2 * 1024 * 1024; // 2MB
-      if (file.size > MAX_FILE_SIZE) {
-        alert("File size exceeds 2MB. Please upload a smaller file.");
-        e.target.value = ""; // Reset file input
-        return;
-      }
-
-      // Validate file extension
-      if (!file.name.match(/\.(yaml|yml)$/i)) {
-        alert("Please upload a YAML file (.yaml or .yml)");
-        e.target.value = "";
-        return;
-      }
-
-      setValue("openApiFileName", file.name, { shouldValidate: true });
-      const reader = new FileReader();
-      reader.onload = () => {
-        const text = typeof reader.result === "string" ? reader.result : "";
-        setValue("openApiContent", text, { shouldValidate: true });
-      };
-      reader.onerror = () => {
-        alert("Failed to read file. Please try again.");
-        setValue("openApiFileName", "");
-      };
-      reader.readAsText(file);
-    },
-    [setValue]
+    [handleFieldChange]
   );
 
   return (
-    <Card variant="outlined">
-      <CardContent sx={{ gap: 1, display: "flex", flexDirection: "column" }}>
-        <Typography variant="h5">Agent Type</Typography>
-
-        <Typography variant="body2" color="text.secondary">
-          How your agent receives requests
-        </Typography>
-        <Box display="flex" flexDirection="column" gap={1}>
-          <Box display="flex" flexDirection="row" gap={1}>
-            {inputInterfaces.map((inputInterface) => (
-              <Card
-                key={inputInterface.value}
-                variant="outlined"
-                onClick={() => handleSelect(inputInterface.value)}
-                sx={{
-                  maxWidth: 500,
-                  cursor: "pointer",
-                  flexGrow: 1,
-                  transition: theme.transitions.create([
-                    "background-color",
-                    "border-color",
-                  ]),
-                  "&.MuiCard-root": {
-                    backgroundColor:
-                      interfaceType === inputInterface.value
-                        ? "background.default"
-                        : "action.paper",
-                    borderColor:
-                      interfaceType === inputInterface.value
-                        ? "primary.main"
-                        : "divider",
-                    "&:hover": {
-                      backgroundColor: "background.default",
-                      borderColor: "primary.main",
-                    },
-                  },
-                }}
-              >
-                <CardContent sx={{ height: "100%" }}>
-                  <Box
-                    display="flex"
-                    flexDirection="row"
-                    alignItems="center"
-                    height="100%"
-                    gap={1}
-                  >
-                    <Box
-               
-                    >
-                      {interfaceType === inputInterface.value ? (
-                        <CheckCircle size={16} />
-                      ) : (
-                        <Circle size={16} />
-                      )}
-                    </Box>
-                    <Divider orientation="vertical" flexItem />
-                    <Box>
-                      <Typography variant="h6">
-                        {inputInterface.label}
-                      </Typography>
-                      <Typography variant="caption">
-                        {inputInterface.description}
-                      </Typography>
-                    </Box>
+    <Form.Section>
+      <Form.Subheader>Agent Type</Form.Subheader>
+      <Typography variant="body2" color="text.secondary">
+        How your agent receives requests
+      </Typography>
+      <Form.Stack spacing={2}>
+        <Box display="flex" flexDirection="row" gap={1}>
+          {inputInterfaces.map((inputInterface) => (
+            <Form.CardButton
+              key={inputInterface.value}
+              onClick={() => handleSelect(inputInterface.value)}
+              selected={formData.interfaceType === inputInterface.value}
+              sx={{
+                maxWidth: 500,
+                flexGrow: 1,
+              }}
+            >
+              <Form.CardContent sx={{ height: "100%" }}>
+                <Box
+                  display="flex"
+                  flexDirection="row"
+                  alignItems="center"
+                  height="100%"
+                  gap={1}
+                >
+                  <Box>
+                    {formData.interfaceType === inputInterface.value ? (
+                      <CheckCircle size={16} />
+                    ) : (
+                      <Circle size={16} />
+                    )}
                   </Box>
-                </CardContent>
-              </Card>
-            ))}
-          </Box>
-          <Collapse in={interfaceType === "DEFAULT"}>
-            <Typography variant="body2" color="text.secondary">
-              <Alert severity="info">
-                /chat (string message, string session_id, context: JSON) →
-                string reply Runs on port 8080.
-              </Alert>
-            </Typography>
-          </Collapse>
-          <Collapse in={interfaceType === "CUSTOM"}>
-            <Box display="flex" flexDirection="column" gap={1}>
-              <Box display="flex" flexDirection="row" gap={1}>
-                <Box display="flex" flexDirection="column" flexGrow={1}>
-                  <TextInput
-                    label="OpenAPI Spec"
-                    placeholder="openapi.yaml"
-                    value={openApiFileName || ""}
-                    fullWidth
-                    size="small"
-                    slotProps={{ input: { readOnly: true } }}
-                    error={!!errors.openApiFileName || !!errors.openApiContent}
-                    helperText={
-                      (errors.openApiFileName?.message as string) ||
-                      (errors.openApiContent?.message as string) ||
-                      (openApiFileName
-                        ? "File loaded in browser"
-                        : "Upload your OpenAPI YAML file")
-                    }
-                  />
-                  <Box pt={1}>
-                    <Button
-                      variant="outlined"
-                      startIcon={<AttachFile size={16} />}
-                      onClick={() => fileInputRef.current?.click()}
-                    >
-                      Choose File
-                    </Button>
+                  <Divider orientation="vertical" flexItem />
+                  <Box>
+                    <Typography variant="h6">
+                      {inputInterface.label}
+                    </Typography>
+                    <Typography variant="caption">
+                      {inputInterface.description}
+                    </Typography>
                   </Box>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".yaml,.yml,text/yaml,application/x-yaml,application/yaml"
-                    style={{ display: "none" }}
-                    onChange={handleFilePick}
-                  />
                 </Box>
-                <Box>
-                  <TextInput
-                    label="Port"
+              </Form.CardContent>
+            </Form.CardButton>
+          ))}
+        </Box>
+        <Collapse in={formData.interfaceType === "DEFAULT"}>
+          <Alert severity="info">
+            Uses the standard chat interface: <strong>POST /chat</strong> on
+            port <strong>8000</strong>
+            <br />
+            Request:{" "}
+            <code>{`{message: string, session_id: string, context: JSON}`}</code>
+            <br />
+            Response: <code>{`{response: string}`}</code>
+          </Alert>
+        </Collapse>
+        <Collapse in={formData.interfaceType === "CUSTOM"}>
+          <Form.Stack spacing={2}>
+            <Form.Stack direction="row" spacing={2}>
+              <Box display="flex" flexDirection="column" flexGrow={1}>
+                <Form.ElementWrapper label="OpenAPI Spec Path" name="openApiPath">
+                  <TextField
+                    id="openApiPath"
+                    placeholder="/openapi.yaml"
+                    required
+                    value={formData.openApiPath || ''}
+                    onChange={(e) => handleFieldChange('openApiPath', e.target.value)}
+                    error={!!errors.openApiPath}
+                    helperText={
+                      errors.openApiPath ||
+                      "Path to OpenAPI schema file in your repository"
+                    }
+                    fullWidth
+                  />
+                </Form.ElementWrapper>
+              </Box>
+              <Box>
+                <Form.ElementWrapper label="Port" name="port">
+                  <TextField
+                    id="port"
                     placeholder="8080"
                     required
-                    value={port}
+                    value={formData.port ?? ''}
                     onChange={handlePortChange}
-                    size="small"
                     type="number"
                     error={!!errors.port}
                     helperText={
-                      (errors.port?.message as string) ||
-                      (port ? undefined : "Port is required")
+                      errors.port ||
+                      (formData.port ? undefined : "Port is required")
                     }
                   />
-                </Box>
+                </Form.ElementWrapper>
               </Box>
-              <Box>
-                <TextInput
-                  label="Base Path"
-                  placeholder="/"
-                  required
-                  fullWidth
-                  size="small"
-                  error={!!errors.basePath}
-                  helperText={
-                    (errors.basePath?.message as string) ||
-                    "API base path (e.g., / or /api/v1)"
-                  }
-                  {...register("basePath")}
-                />
-              </Box>
-            </Box>
-          </Collapse>
-        </Box>
-      </CardContent>
-    </Card>
+            </Form.Stack>
+            <Form.ElementWrapper label="Base Path" name="basePath">
+              <TextField
+                id="basePath"
+                placeholder="/"
+                required
+                value={formData.basePath || ''}
+                onChange={(e) => handleFieldChange('basePath', e.target.value)}
+                error={!!errors.basePath}
+                helperText={
+                  errors.basePath ||
+                  "API base path (e.g., / or /api/v1)"
+                }
+                fullWidth
+              />
+            </Form.ElementWrapper>
+          </Form.Stack>
+        </Collapse>
+      </Form.Stack>
+    </Form.Section>
   );
 };

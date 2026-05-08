@@ -3,7 +3,6 @@ tracesObserver:
   enabled: true
   developmentMode: false
   name: amp-traces-observer
-  namespace: openchoreo-observability-plane
   replicaCount: 1
   image:
     repository: ghcr.io/wso2/amp-traces-observer
@@ -17,14 +16,17 @@ tracesObserver:
     memory: 128Mi
     cpu: 250m
   service:
-    type: NodePort
-  env:
-    opensearchAddress: https://opensearch-headless.openchoreo-observability-plane.svc.cluster.local:9200
-    # Note: OpenSearch credentials are stored in opensearch-credentials secret
-opensearch:
-  hosts:
-    - https://opensearch-headless.openchoreo-observability-plane.svc.cluster.local:9200
-  namespace: openchoreo-observability-plane
-  username: "admin"
-  password: "ThisIsTheOpenSearchPassword1"
-
+    type: LoadBalancer
+  # Observer Service connection — the upstream service that provides trace data.
+  observer:
+    baseUrl: "http://observer.openchoreo-observability-plane.svc.cluster.local:8080"
+    idpTokenUrl: "http://amp-thunder-extension-service.amp-thunder.svc.cluster.local:8090/oauth2/token"
+    idpClientId: "amp-api-client"
+    idpClientSecret: "amp-api-client-secret"
+  # JWT authentication — must match the agent-manager keyManager config so the
+  # same user token issued by Thunder is accepted by both services.
+  auth:
+    isLocalDevEnv: false
+    jwksUrl: "http://amp-thunder-extension-service.amp-thunder.svc.cluster.local:8090/oauth2/jwks"
+    issuer: "http://thunder.amp.localhost:8080"
+    audience: "amp-console-client,amp-api-client,amp-publisher-client"

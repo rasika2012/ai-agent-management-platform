@@ -1,4 +1,4 @@
-// Copyright (c) 2025, WSO2 LLC. (https://www.wso2.com).
+// Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com).
 //
 // WSO2 LLC. licenses this file to you under the Apache License,
 // Version 2.0 (the "License"); you may not use this file except
@@ -19,44 +19,101 @@ package api
 import (
 	"net/http"
 
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/config"
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/middleware"
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/middleware/logger"
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/wiring"
+	"github.com/wso2/agent-manager/agent-manager-service/config"
+	"github.com/wso2/agent-manager/agent-manager-service/middleware"
+	"github.com/wso2/agent-manager/agent-manager-service/middleware/logger"
+	"github.com/wso2/agent-manager/agent-manager-service/wiring"
+
+	"github.com/wso2/agent-manager/agent-manager-service/mcp"
 )
 
-// MakeHTTPHandler creates a new HTTP handler with middleware and routes
-func MakeHTTPHandler(params *wiring.AppParams) http.Handler {
+// MakeHTTPHandler creates a new HTTP handler with middleware and routes.
+// extraAPIRoutes, if non-nil, is called to register additional routes onto the
+// authenticated /api/v1 sub-mux before middleware is applied.
+func MakeHTTPHandler(params *wiring.AppParams, extraAPIRoutes func(*http.ServeMux, *wiring.AppParams)) http.Handler {
 	mux := http.NewServeMux()
 
 	// Register health check
 	registerHealthCheck(mux)
 
-	// Create a sub-mux for API v1 routes
+	// Register JWKS endpoint at root level (no authentication required)
+	registerJWKSRoute(mux, params.AgentTokenController)
+
+	// Register OAuth 2.0 Protected Resource Metadata (RFC 9728) at root level (no authentication required)
+	registerWellKnownRoutes(mux)
+
+	// Register MCP at root level
+	mcp.RegisterRoute(mux, mcp.Dependencies{
+		InfraResourceManager:     params.InfraResourceManager,
+		AgentManagerService:      params.AgentManagerService,
+		AgentTokenManagerService: params.AgentTokenManagerService,
+	}, params.AuthMiddleware)
+
+	// Create a sub-mux for API v1 routes (JWT-authenticated)
 	apiMux := http.NewServeMux()
 	registerAgentRoutes(apiMux, params.AgentController)
+	registerAgentTokenRoutes(apiMux, params.AgentTokenController)
 	registerInfraRoutes(apiMux, params.InfraResourceController)
-	registerObservabilityRoutes(apiMux, params.ObservabilityController)
+	registerRepositoryRoutes(apiMux, params.RepositoryController)
+	registerEnvironmentRoutes(apiMux, params.EnvironmentController)
+	RegisterGatewayRoutes(apiMux, params.GatewayController)
+	registerMonitorRoutes(apiMux, params.MonitorController)
+	registerMonitorScoreRoutes(apiMux, params.MonitorScoresController)
+	registerEvaluatorRoutes(apiMux, params.EvaluatorController)
+	registerCatalogRoutes(apiMux, params.CatalogController)
+	RegisterLLMRoutes(apiMux, params.LLMController)
+	RegisterLLMDeploymentRoutes(apiMux, params.LLMDeploymentController)
+	RegisterLLMProviderAPIKeyRoutes(apiMux, params.LLMProviderAPIKeyController)
+	RegisterLLMProxyAPIKeyRoutes(apiMux, params.LLMProxyAPIKeyController)
+	RegisterLLMProxyDeploymentRoutes(apiMux, params.LLMProxyDeploymentController)
+	RegisterAgentConfigRoutes(apiMux, params.AgentConfigurationController)
+	RegisterMonitorPublisherRoutes(apiMux, params.MonitorScoresPublisherController)
+	RegisterGitSecretRoutes(apiMux, params.GitSecretController)
+
+	if extraAPIRoutes != nil {
+		extraAPIRoutes(apiMux, params)
+	}
 
 	// Apply middleware in reverse order (last middleware is applied first)
 	apiHandler := http.Handler(apiMux)
 	apiHandler = params.AuthMiddleware(apiHandler)
-	apiHandler = middleware.AddCorrelationID()(apiHandler)
 	apiHandler = logger.RequestLogger()(apiHandler)
+	apiHandler = middleware.AddCorrelationID()(apiHandler)
 	apiHandler = middleware.CORS(config.GetConfig().CORSAllowedOrigin)(apiHandler)
 	apiHandler = middleware.RecovererOnPanic()(apiHandler)
 
-	// Create a mux for internal API routes
-	internalApiMux := http.NewServeMux()
-	registerInternalRoutes(internalApiMux, params.BuildCIController)
-	internalApiHandler := http.Handler(internalApiMux)
-	internalApiHandler = middleware.APIKeyMiddleware()(internalApiHandler) // Add API key middleware for internal routes
-	internalApiHandler = middleware.AddCorrelationID()(internalApiHandler)
-	internalApiHandler = logger.RequestLogger()(internalApiHandler)
-	internalApiHandler = middleware.RecovererOnPanic()(internalApiHandler)
-
 	mux.Handle("/api/v1/", http.StripPrefix("/api/v1", apiHandler))
-	mux.Handle("/internal/", http.StripPrefix("/internal", internalApiHandler))
+
+	return mux
+}
+
+// MakeInternalHTTPHandler creates the internal HTTPS server handler
+// This server hosts WebSocket connections and gateway internal APIs without JWT middleware
+func MakeInternalHTTPHandler(params *wiring.AppParams) http.Handler {
+	mux := http.NewServeMux()
+
+	// Health check endpoint
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte(`{"status":"ok"}`)); err != nil {
+			logger.GetLogger(r.Context()).Error("Failed to write health check response", "error", err)
+		}
+	})
+
+	// Create internal mux for gateway internal and WebSocket routes (NO JWT middleware)
+	// These routes use api-key header authentication instead
+	internalMux := http.NewServeMux()
+	RegisterGatewayInternalRoutes(internalMux, params.GatewayInternalController)
+	RegisterWebSocketRoutes(internalMux, params.WebSocketController)
+
+	// Apply basic middleware (no JWT auth)
+	internalHandler := http.Handler(internalMux)
+	internalHandler = logger.RequestLogger()(internalHandler)
+	internalHandler = middleware.AddCorrelationID()(internalHandler)
+	internalHandler = middleware.CORS(config.GetConfig().CORSAllowedOrigin)(internalHandler)
+	internalHandler = middleware.RecovererOnPanic()(internalHandler)
+
+	mux.Handle("/api/internal/v1/", http.StripPrefix("/api/internal/v1", internalHandler))
 
 	return mux
 }

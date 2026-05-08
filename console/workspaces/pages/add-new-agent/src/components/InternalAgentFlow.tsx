@@ -1,0 +1,176 @@
+/**
+ * Copyright (c) 2025, WSO2 LLC. (https://www.wso2.com).
+ *
+ * WSO2 LLC. licenses this file to you under the Apache License,
+ * Version 2.0 (the "License"); you may not use this file except
+ * in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import React, { useCallback, useMemo, useState } from "react";
+import { Alert, Form } from "@wso2/oxygen-ui";
+import { PageLayout, useFormValidation } from "@agent-management-platform/views";
+import { generatePath, useNavigate, useParams } from "react-router-dom";
+import { absoluteRouteMap, OrgProjPathParams } from "@agent-management-platform/types";
+import { useCreateAgent } from "@agent-management-platform/api-client";
+import { createAgentSchema, type CreateAgentFormValues, type LLMProviderFormEntry } from "../form/schema";
+import { InternalAgentForm } from "../forms/InternalAgentForm";
+import { CreateButtons } from "./CreateButtons";
+import { buildAgentCreationPayload } from "../utils/buildAgentPayload";
+
+export const InternalAgentFlow: React.FC = () => {
+  const navigate = useNavigate();
+  const { orgId, projectId } = useParams<{
+    orgId: string;
+    projectId?: string;
+  }>();
+
+  const [formData, setFormData] = useState<CreateAgentFormValues>({
+    deploymentType: "new" as const,
+    enableAutoInstrumentation: true,
+    name: "",
+    displayName: "",
+    description: "",
+    repositoryUrl: "",
+    branch: "main",
+    appPath: "/",
+    runCommand: "python main.py",
+    language: "python",
+    languageVersion: "3.11",
+    dockerfilePath: "/Dockerfile",
+    interfaceType: "DEFAULT" as const,
+    port: "" as unknown as number,
+    basePath: "/",
+    openApiPath: "",
+    env: [],
+  });
+
+  const { errors, validateForm, setFieldError, validateField } =
+    useFormValidation<CreateAgentFormValues>(createAgentSchema);
+
+  const [llmProviders, setLLMProviders] = useState<LLMProviderFormEntry[]>([]);
+
+  const { mutate: createAgent, isPending, error } = useCreateAgent();
+
+  const params = useMemo<OrgProjPathParams>(
+    () => ({
+      orgName: orgId ?? "default",
+      projName: projectId ?? "default",
+    }),
+    [orgId, projectId]
+  );
+
+  const handleCancel = useCallback(() => {
+    navigate(
+      generatePath(absoluteRouteMap.children.org.children.projects.path, {
+        orgId: orgId ?? "",
+        projectId: projectId ?? "default",
+      })
+    );
+  }, [navigate, orgId, projectId]);
+
+  const [lastSubmittedValidationErrors, setLastSubmittedValidationErrors] = useState<
+    typeof errors
+  >({});
+
+  const handleDeploy = useCallback(() => {
+    if (!validateForm(formData)) {
+      setLastSubmittedValidationErrors(errors);
+      return;
+    } else {
+      setLastSubmittedValidationErrors({});
+    }
+
+    const payload = buildAgentCreationPayload(formData, params, llmProviders);
+    createAgent(payload, {
+      onSuccess: () => {
+        navigate(
+          generatePath(
+            absoluteRouteMap.children.org.children.projects.children.agents.path,
+            {
+              orgId: params.orgName ?? "",
+              projectId: params.projName ?? "",
+              agentId: payload.body.name,
+            }
+          ) + "?setup=true"
+        );
+      },
+      onError: (e: unknown) => {
+        // eslint-disable-next-line no-console
+        console.error("Failed to create agent:", e);
+      },
+    });
+  }, [validateForm, formData, createAgent, navigate, params, errors, llmProviders]);
+
+
+  const backHref = useMemo(() => {
+    return generatePath(absoluteRouteMap.children.org.children.projects.children.newAgent.path, {
+      orgId: orgId ?? "",
+      projectId: projectId ?? "default",
+    });
+  }, [orgId, projectId]);
+
+  return (
+    <PageLayout
+      title="Create a Platform-Hosted Agent"
+      description="Specify the source repository, select the agent type, and deploy it on the platform."
+      disableIcon
+      backHref={backHref}
+      backLabel="Back to Agent Hosting Options"
+    >
+      <Form.Stack spacing={3}>
+        <InternalAgentForm
+          formData={formData}
+          setFormData={setFormData}
+          errors={errors}
+          setFieldError={setFieldError}
+          validateField={validateField}
+          llmProviders={llmProviders}
+          setLLMProviders={setLLMProviders}
+        />
+
+        {!!error && (
+          <Alert severity="error" sx={{ mt: 2 }}>
+            {error instanceof Error ? error.message : "Failed to create agent"}
+          </Alert>
+        )}
+
+        <CreateButtons
+          lastSubmittedValidationErrors={lastSubmittedValidationErrors}
+          isPending={isPending}
+          onCancel={handleCancel}
+          onSubmit={handleDeploy}
+          isNameEmpty={!formData.name.trim()}
+          mode="deploy"
+          hasLLMVarConflicts={(() => {
+            const agentNameUpper = formData.displayName
+              ? formData.displayName.toUpperCase().replace(/[^A-Z0-9]/g, "_")
+              : "AGENT";
+            const llmNames = llmProviders.flatMap((e, i) => [
+              e.urlVarName ?? `${agentNameUpper}_${i + 1}_URL`,
+              e.apikeyVarName ?? `${agentNameUpper}_${i + 1}_API_KEY`,
+            ]);
+            const llmNameSet = new Set(llmNames);
+            // Duplicate LLM names
+            if (llmNames.length !== llmNameSet.size) return true;
+            // Duplicate env keys
+            const envKeyList = (formData.env ?? [])
+            .map((e) => e.key).filter((k): k is string => !!k);
+            if (envKeyList.length !== new Set(envKeyList).size) return true;
+            // Cross-conflict: env key matches an LLM name
+            return envKeyList.some((k) => llmNameSet.has(k));
+          })()}
+        />
+      </Form.Stack>
+    </PageLayout>
+  );
+};

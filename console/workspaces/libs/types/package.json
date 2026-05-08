@@ -20,13 +20,14 @@
   "devDependencies": {
     "typescript": "5.9.3",
     "eslint": "9.36.0",
-    "tsx": "4.7.0"
+    "tsx": "4.7.0",
+    "@types/react": "19.2.14"
   },
   "dependencies": {
-    "@asgardeo/auth-react": "3.0.0",
+    "@asgardeo/react": "0.22.4",
     "@agent-management-platform/eslint-config": "workspace:*",
-    "dayjs": "1.11.18",
-    "yup": "1.4.0"
+    "date-fns": "4.1.0",
+    "zod": "4.3.6"
   }
 }
 

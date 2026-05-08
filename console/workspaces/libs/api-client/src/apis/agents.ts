@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2025, WSO2 LLC. (https://www.wso2.com).
+ * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com).
  *
  * WSO2 LLC. licenses this file to you under the Apache License,
  * Version 2.0 (the "License"); you may not use this file except
@@ -16,8 +16,9 @@
  * under the License.
  */
 
-import { httpDELETE, httpGET, httpPOST, SERVICE_BASE } from '../utils';
-import {
+import { cloneDeep } from "lodash";
+import { httpDELETE, httpGET, httpPOST, httpPUT, SERVICE_BASE } from "../utils";
+import type {
   AgentListResponse,
   AgentResponse,
   CreateAgentPathParams,
@@ -25,9 +26,16 @@ import {
   GetAgentPathParams,
   ListAgentsPathParams,
   ListAgentsQuery,
-  CreateAgentRequest
-} from '@agent-management-platform/types';
-
+  CreateAgentRequest,
+  UpdateAgentPathParams,
+  UpdateAgentRequest,
+  UpdateAgentBuildParametersPathParams,
+  UpdateAgentBuildParametersRequest,
+  GenerateAgentTokenPathParams,
+  GenerateAgentTokenQuery,
+  TokenRequest,
+  TokenResponse,
+} from "@agent-management-platform/types";
 
 export async function listAgents(
   params: ListAgentsPathParams,
@@ -41,13 +49,15 @@ export async function listAgents(
         Object.entries(query)
           // eslint-disable-next-line @typescript-eslint/no-unused-vars
           .filter(([_, v]) => v !== undefined)
-          .map(([k, v]) => [k, String(v)]),
+          .map(([k, v]) => [k, String(v)])
       )
     : undefined;
   const token = getToken ? await getToken() : undefined;
   const res = await httpGET(
-    `${SERVICE_BASE}/orgs/${encodeURIComponent(orgName)}/projects/${encodeURIComponent(projName)}/agents`,
-    {searchParams: search, token: token},
+    `${SERVICE_BASE}/orgs/${encodeURIComponent(
+      orgName
+    )}/projects/${encodeURIComponent(projName)}/agents`,
+    { searchParams: search, token: token }
   );
 
   if (!res.ok) throw await res.json();
@@ -62,9 +72,11 @@ export async function createAgent(
   const { orgName = "default", projName = "default" } = params;
   const token = getToken ? await getToken() : undefined;
   const res = await httpPOST(
-    `${SERVICE_BASE}/orgs/${encodeURIComponent(orgName)}/projects/${encodeURIComponent(projName)}/agents`,
-    body,
-    { token },
+    `${SERVICE_BASE}/orgs/${encodeURIComponent(
+      orgName
+    )}/projects/${encodeURIComponent(projName)}/agents`,
+    cloneDeep(body),
+    { token }
   );
   if (!res.ok) throw await res.json();
   return res.json();
@@ -75,6 +87,11 @@ export async function getAgent(
   getToken?: () => Promise<string>,
 ): Promise<AgentResponse> {
   const { orgName = "default", projName = "default", agentName } = params;
+
+  if (!agentName) {
+    throw new Error("agentName is required");
+  }
+
   const token = getToken ? await getToken() : undefined;
   const url =
     `${SERVICE_BASE}/orgs/${encodeURIComponent(orgName)}` +
@@ -90,6 +107,11 @@ export async function deleteAgent(
   getToken?: () => Promise<string>,
 ): Promise<void> {
   const { orgName = "default", projName = "default", agentName } = params;
+
+  if (!agentName) {
+    throw new Error("agentName is required");
+  }
+
   const token = getToken ? await getToken() : undefined;
   const url =
     `${SERVICE_BASE}/orgs/${encodeURIComponent(orgName)}` +
@@ -99,4 +121,76 @@ export async function deleteAgent(
   if (!res.ok) throw await res.json();
 }
 
+export async function updateAgent(
+  params: UpdateAgentPathParams,
+  body: UpdateAgentRequest,
+  getToken?: () => Promise<string>,
+): Promise<AgentResponse> {
+  const { orgName = "default", projName = "default", agentName } = params;
 
+  if (!agentName) {
+    throw new Error("agentName is required");
+  }
+
+  const token = getToken ? await getToken() : undefined;
+  const url =
+    `${SERVICE_BASE}/orgs/${encodeURIComponent(orgName)}` +
+    `/projects/${encodeURIComponent(projName)}` +
+    `/agents/${encodeURIComponent(agentName)}`;
+  const res = await httpPUT(url, cloneDeep(body), { token });
+  if (!res.ok) throw await res.json();
+  return res.json();
+}
+
+export async function updateAgentBuildParameters(
+  params: UpdateAgentBuildParametersPathParams,
+  body: UpdateAgentBuildParametersRequest,
+  getToken?: () => Promise<string>,
+): Promise<AgentResponse> {
+  const { orgName = "default", projName = "default", agentName } = params;
+
+  if (!agentName) {
+    throw new Error("agentName is required");
+  }
+
+  const token = getToken ? await getToken() : undefined;
+  const url =
+    `${SERVICE_BASE}/orgs/${encodeURIComponent(orgName)}` +
+    `/projects/${encodeURIComponent(projName)}` +
+    `/agents/${encodeURIComponent(agentName)}/build-parameters`;
+  const res = await httpPUT(url, cloneDeep(body), { token });
+  if (!res.ok) throw await res.json();
+  return res.json();
+}
+
+export async function generateAgentToken(
+  params: GenerateAgentTokenPathParams,
+  body?: TokenRequest,
+  query?: GenerateAgentTokenQuery,
+  getToken?: () => Promise<string>,
+): Promise<TokenResponse> {
+  const { orgName = "default", projName = "default", agentName } = params;
+
+  if (!agentName) {
+    throw new Error("agentName is required");
+  }
+
+  const search = query
+    ? Object.fromEntries(
+        Object.entries(query)
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+          .filter(([_, v]) => v !== undefined)
+          .map(([k, v]) => [k, String(v)])
+      )
+    : undefined;
+
+  const token = getToken ? await getToken() : undefined;
+  const url =
+    `${SERVICE_BASE}/orgs/${encodeURIComponent(orgName)}` +
+    `/projects/${encodeURIComponent(projName)}` +
+    `/agents/${encodeURIComponent(agentName)}/token`;
+  
+  const res = await httpPOST(url, body || {}, { searchParams: search, token });
+  if (!res.ok) throw await res.json();
+  return res.json();
+}

@@ -20,26 +20,24 @@ import "time"
 
 // TraceQueryParams holds parameters for trace queries
 type TraceQueryParams struct {
-	ComponentUid     string
-	ProjectUid       string
-	EnvironmentUid   string
-	OrganizationUid  string
-	StartTime        string
-	EndTime          string
-	Limit            int
-	Offset           int
-	SortOrder        string
+	ComponentUid   string
+	EnvironmentUid string
+	StartTime      string
+	EndTime        string
+	Limit          int
+	Offset         int
+	SortOrder      string
 }
 
-// TraceByIdAndServiceParams holds parameters for querying by both traceId and componentUid
-type TraceByIdAndServiceParams struct {
-	TraceID          string
-	ComponentUid     string
-	ProjectUid       string
-	EnvironmentUid   string
-	OrganizationUid  string
-	SortOrder        string
-	Limit            int
+// TraceByIdParams holds parameters for querying spans by trace IDs
+type TraceByIdParams struct {
+	TraceIDs       []string
+	ComponentUid   string
+	EnvironmentUid string
+	ParentSpan     bool
+	Limit          int
+	StartTime      string
+	EndTime        string
 }
 
 // Span represents a single trace span
@@ -56,12 +54,106 @@ type Span struct {
 	Status          string                 `json:"status,omitempty"`
 	Attributes      map[string]interface{} `json:"attributes,omitempty"`
 	Resource        map[string]interface{} `json:"resource,omitempty"`
+	AmpAttributes   *AmpAttributes         `json:"ampAttributes,omitempty"` // Custom AMP-specific attributes
+}
+
+// AmpAttributes holds custom attributes added by the AMP platform
+type AmpAttributes struct {
+	Kind   string      `json:"kind"`             // Semantic span kind: llm, tool, embedding, retriever, rerank, agent, task, unknown
+	Input  interface{} `json:"input,omitempty"`  // Input data (type varies by kind)
+	Output interface{} `json:"output,omitempty"` // Output data (type varies by kind)
+	Status *SpanStatus `json:"status,omitempty"` // Execution status with error information
+	Data   interface{} `json:"data,omitempty"`   // Kind-specific data: *LLMData, *ToolData, *EmbeddingData, *RetrieverData, etc.
+}
+
+// LLMData contains LLM-specific span information
+type LLMData struct {
+	Tools       []ToolDefinition `json:"tools,omitempty"`       // Available tools/functions
+	Model       string           `json:"model,omitempty"`       // Model name (gen_ai.response.model or gen_ai.request.model)
+	Vendor      string           `json:"vendor,omitempty"`      // LLM vendor/provider (gen_ai.system)
+	Temperature *float64         `json:"temperature,omitempty"` // Temperature parameter
+	TokenUsage  *LLMTokenUsage   `json:"tokenUsage,omitempty"`  // Token usage details
+}
+
+// ToolData contains tool execution span information
+type ToolData struct {
+	Name string `json:"name,omitempty"` // Tool/function name
+}
+
+// EmbeddingData contains embedding generation span information
+// EmbeddingData contains embedding generation span information
+type EmbeddingData struct {
+	Model      string         `json:"model,omitempty"`      // Embedding model name
+	Vendor     string         `json:"vendor,omitempty"`     // Embedding vendor/provider (gen_ai.system)
+	TokenUsage *LLMTokenUsage `json:"tokenUsage,omitempty"` // Token usage details
+}
+
+// RetrieverData contains vector database retrieval span information
+type RetrieverData struct {
+	VectorDB string `json:"vectorDB,omitempty"` // Vector database system (e.g., Chroma, Pinecone)
+	TopK     int    `json:"topK,omitempty"`     // Number of top results requested
+}
+
+// AgentData contains agent execution span information
+type AgentData struct {
+	Name           string           `json:"name,omitempty"`           // Agent name (from gen_ai.agent.name)
+	Tools          []ToolDefinition `json:"tools,omitempty"`          // Available tools for the agent (from gen_ai.agent.tools)
+	Model          string           `json:"model,omitempty"`          // Model used by the agent (from gen_ai.request.model)
+	Framework      string           `json:"framework,omitempty"`      // Agent framework (from gen_ai.system, e.g., "strands-agents")
+	SystemPrompt   string           `json:"systemPrompt,omitempty"`   // System prompt for the agent
+	MaxIter        int              `json:"maxIter,omitempty"`        // Maximum iterations for the agent (from crewai.agent.max_iter)
+	TokenUsage     *LLMTokenUsage   `json:"tokenUsage,omitempty"`     // Token usage details (aggregated from agent execution)
+	ConversationID string           `json:"conversationId,omitempty"` // Conversation ID (from gen_ai.conversation.id)
+}
+
+// CrewAITaskData contains CrewAI task execution span information
+type CrewAITaskData struct {
+	Name        string           `json:"name,omitempty"`        // Task name (from crewai.task.name)
+	Description string           `json:"description,omitempty"` // Task description (from crewai.task.description)
+	Tools       []ToolDefinition `json:"tools,omitempty"`       // Available tools for the task (from crewai.task.tools)
+}
+
+// SpanStatus represents the execution status of a span
+type SpanStatus struct {
+	Error     bool   `json:"error"`               // Whether the span has an error
+	ErrorType string `json:"errorType,omitempty"` // Error type from error.type attribute (only if error is true)
+}
+
+// LLMTokenUsage represents token usage for a single LLM span
+type LLMTokenUsage struct {
+	InputTokens          int `json:"inputTokens"`
+	OutputTokens         int `json:"outputTokens"`
+	CacheReadInputTokens int `json:"cacheReadInputTokens,omitempty"`
+	TotalTokens          int `json:"totalTokens"`
+}
+
+// PromptMessage represents a single message in a conversation
+type PromptMessage struct {
+	Role      string     `json:"role"`                // system, user, assistant, tool
+	Content   string     `json:"content,omitempty"`   // The message content (text)
+	ToolCalls []ToolCall `json:"toolCalls,omitempty"` // Tool calls made by assistant (for assistant role with tool calls)
+}
+
+// ToolCall represents a tool/function call made by the assistant
+type ToolCall struct {
+	ID        string `json:"id"`        // Tool call ID
+	Name      string `json:"name"`      // Function/tool name
+	Arguments string `json:"arguments"` // JSON arguments for the tool
+}
+
+// ToolDefinition represents a tool/function available to the LLM
+type ToolDefinition struct {
+	Name        string `json:"name"`                  // Function name
+	Description string `json:"description,omitempty"` // Function description
+	Parameters  string `json:"parameters,omitempty"`  // JSON schema of parameters
 }
 
 // TraceResponse represents the response for trace queries
 type TraceResponse struct {
-	Spans      []Span `json:"spans"`
-	TotalCount int    `json:"totalCount"`
+	Spans      []Span       `json:"spans"`
+	TotalCount int          `json:"totalCount"`
+	TokenUsage *TokenUsage  `json:"tokenUsage,omitempty"` // Aggregated token usage from GenAI spans
+	Status     *TraceStatus `json:"status,omitempty"`     // Trace status including error information
 }
 
 // TraceDetailResponse represents detailed information for a single trace
@@ -75,20 +167,77 @@ type TraceDetailResponse struct {
 
 // TraceOverview represents a single trace overview with root span info
 type TraceOverview struct {
-	TraceID            string                 `json:"traceId"`
-	RootSpanID         string                 `json:"rootSpanId"`
-	RootSpanName       string                 `json:"rootSpanName"`
-	RootSpanAttributes map[string]interface{} `json:"rootSpanAttributes,omitempty"`
-	StartTime          string                 `json:"startTime"`
-	EndTime            string                 `json:"endTime"`
-	DurationInNanos    int64                  `json:"durationInNanos"` // Total trace duration in nanoseconds
-	SpanCount          int                    `json:"spanCount"`
+	TraceID         string       `json:"traceId"`
+	RootSpanID      string       `json:"rootSpanId"`
+	RootSpanName    string       `json:"rootSpanName"`
+	RootSpanKind    string       `json:"rootSpanKind"` // Semantic kind of the root span (llm, tool, etc.)
+	StartTime       string       `json:"startTime"`
+	EndTime         string       `json:"endTime"`
+	DurationInNanos int64        `json:"durationInNanos"` // Total trace duration in nanoseconds
+	SpanCount       int          `json:"spanCount"`
+	TokenUsage      *TokenUsage  `json:"tokenUsage,omitempty"` // Aggregated token usage from GenAI spans
+	Status          *TraceStatus `json:"status,omitempty"`     // Trace status including error information
+	Input           interface{}  `json:"input,omitempty"`      // Input from root span (nil if not found)
+	Output          interface{}  `json:"output,omitempty"`     // Output from root span (nil if not found)
+}
+
+// TraceStatus represents the status of a trace
+type TraceStatus struct {
+	ErrorCount int `json:"errorCount"` // Number of spans with errors (0 means no errors)
+}
+
+// SpanType represents the semantic type/kind of a span
+type SpanType string
+
+const (
+	SpanTypeLLM        SpanType = "llm"        // LLM/Chat completion operations
+	SpanTypeEmbedding  SpanType = "embedding"  // Embedding generation operations
+	SpanTypeTool       SpanType = "tool"       // Tool/Function calls
+	SpanTypeRetriever  SpanType = "retriever"  // Vector DB retrieval operations
+	SpanTypeRerank     SpanType = "rerank"     // Reranking operations
+	SpanTypeAgent      SpanType = "agent"      // Agent orchestration
+	SpanTypeChain      SpanType = "chain"      // Generic tasks/workflows
+	SpanTypeCrewAITask SpanType = "crewaitask" // CrewAI task operations
+	SpanTypeUnknown    SpanType = "unknown"    // Unknown/unclassified spans
+)
+
+// TokenUsage represents aggregated token usage from GenAI spans
+type TokenUsage struct {
+	InputTokens  int `json:"inputTokens"`
+	OutputTokens int `json:"outputTokens"`
+	TotalTokens  int `json:"totalTokens"`
 }
 
 // TraceOverviewResponse represents the response for trace overview queries
 type TraceOverviewResponse struct {
 	Traces     []TraceOverview `json:"traces"`
 	TotalCount int             `json:"totalCount"`
+}
+
+// FullTrace represents a complete trace with all spans and metadata
+type FullTrace struct {
+	TraceID         string       `json:"traceId"`
+	RootSpanID      string       `json:"rootSpanId"`
+	RootSpanName    string       `json:"rootSpanName"`
+	RootSpanKind    string       `json:"rootSpanKind"`
+	StartTime       string       `json:"startTime"`
+	EndTime         string       `json:"endTime"`
+	DurationInNanos int64        `json:"durationInNanos"`
+	SpanCount       int          `json:"spanCount"`
+	TokenUsage      *TokenUsage  `json:"tokenUsage,omitempty"`
+	Status          *TraceStatus `json:"status,omitempty"`
+	Input           interface{}  `json:"input,omitempty"`
+	Output          interface{}  `json:"output,omitempty"`
+	TaskId          string       `json:"taskId,omitempty"`  // Task ID from baggage (for evaluation experiments)
+	TrialId         string       `json:"trialId,omitempty"` // Trial ID from baggage (for evaluation experiments)
+	Spans           []Span       `json:"spans"`             // All spans with full details
+}
+
+// TraceExportResponse represents the response for trace export queries
+type TraceExportResponse struct {
+	Traces     []FullTrace `json:"traces"`
+	TotalCount int         `json:"totalCount"`
+	Truncated  bool        `json:"truncated"`
 }
 
 // SearchResponse represents OpenSearch search response
@@ -101,4 +250,36 @@ type SearchResponse struct {
 			Source map[string]interface{} `json:"_source"`
 		} `json:"hits"`
 	} `json:"hits"`
+}
+
+// CompositeAggregationResponse represents an OpenSearch response with composite trace aggregation results
+type CompositeAggregationResponse struct {
+	Aggregations struct {
+		TraceComposite struct {
+			AfterKey *CompositeAfterKey `json:"after_key,omitempty"`
+			Buckets  []CompositeBucket  `json:"buckets"`
+		} `json:"trace_composite"`
+	} `json:"aggregations"`
+}
+
+// CompositeBucket represents a single bucket in the composite aggregation
+type CompositeBucket struct {
+	Key struct {
+		TraceID string `json:"trace_id"`
+	} `json:"key"`
+	DocCount      int `json:"doc_count"`
+	EarliestStart struct {
+		Value float64 `json:"value"`
+	} `json:"earliest_start"`
+	SpanCount struct {
+		Value int `json:"value"`
+	} `json:"span_count"`
+	RootSpanCount struct {
+		DocCount int `json:"doc_count"`
+	} `json:"root_span_count"`
+}
+
+// CompositeAfterKey represents the after_key for composite aggregation pagination
+type CompositeAfterKey struct {
+	TraceID string `json:"trace_id"`
 }

@@ -30,52 +30,57 @@ export interface BuildAgentQuery {
 
 // Responses
 export type BuildStatus =
-  | "BuildInProgress"
-  | "BuildTriggered"
   | "Completed"
-  | "BuildFailed";
+  | "Succeeded"
+  | "Running"
+  | "Pending"
+  | "Failed";
+
+export type BuildStatusColor = 'success' | 'warning' | 'error' | 'default';
+
+export const BUILD_STATUS_COLOR_MAP: Record<BuildStatus, BuildStatusColor> = {
+  Completed: "success",
+  Succeeded: "success",
+  Running: "warning",
+  Pending: "warning",
+  Failed: "error",
+};
+
+export interface BuildParameters {
+  repoUrl: string;
+  appPath: string;
+  branch: string;
+  commitId: string;
+  language: string;
+  languageVersion: string;
+  runCommand: string;
+}
 
 export interface BuildResponse {
   buildId?: string;
   buildName: string;
   projectName: string;
   agentName: string;
-  commitId: string;
   startedAt: string; // ISO date-time
   endedAt?: string; // ISO date-time
   imageId?: string;
   status?: BuildStatus;
-  branch: string;
+  buildParameters: BuildParameters;
 }
 
 export interface BuildsListResponse extends PaginationMeta {
   builds: BuildResponse[];
 }
 
-export type LogLevel = "INFO" | "WARN" | "ERROR" | "DEBUG";
 
-export interface BuildLogEntry {
-  timestamp: string; // ISO date-time
-  log: string;
-  logLevel: LogLevel;
-}
-
-export interface BuildLogsResponse {
-  logs: BuildLogEntry[];
-}
-
-export type BuildStepType =
-  | "BuildInitiated"
-  | "BuildTriggered"
-  | "BuildCompleted"
-  | "WorkloadUpdated";
-export type BuildStepStatus = "True" | "False" | "Unknown";
+export type BuildStepStatus = "Succeeded" | "Failed" | "Running" | "Pending";
 
 export interface BuildStep {
-  type: string; // Using string to be flexible with backend step types
-  status: string; // Using string to be flexible with backend status values
+  type: BuildStatus;
+  status: BuildStepStatus;
   message: string;
-  at: string; // ISO date-time
+  startedAt?: string; // ISO date-time
+  finishedAt?: string; // ISO date-time
 }
 
 export interface BuildDetailsResponse extends BuildResponse {
@@ -88,6 +93,12 @@ export interface BuildDetailsResponse extends BuildResponse {
 export type BuildAgentPathParams = AgentPathParams;
 export type GetAgentBuildsPathParams = AgentPathParams;
 export type GetBuildPathParams = BuildPathParams;
-export type GetBuildLogsPathParams = BuildPathParams;
 
 export type GetAgentBuildsQuery = ListQuery;
+
+// Re-export log types for convenience
+export type {
+  BuildLogEntry,
+  BuildLogsResponse,
+  GetBuildLogsPathParams,
+} from "./logs";

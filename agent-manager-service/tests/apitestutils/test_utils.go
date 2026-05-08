@@ -17,25 +17,28 @@
 package apitestutils
 
 import (
+	"context"
 	"net/http"
 	"testing"
 
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/api"
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/config"
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/middleware/jwtassertion"
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/wiring"
+	"github.com/wso2/agent-manager/agent-manager-service/api"
+	"github.com/wso2/agent-manager/agent-manager-service/config"
+	"github.com/wso2/agent-manager/agent-manager-service/db"
+	"github.com/wso2/agent-manager/agent-manager-service/middleware/jwtassertion"
+	"github.com/wso2/agent-manager/agent-manager-service/wiring"
 )
 
 // MakeAppClientWithDeps creates an HTTP handler with the provided dependencies for testing
 func MakeAppClientWithDeps(t *testing.T, testClients wiring.TestClients, authMiddleware jwtassertion.Middleware) http.Handler {
 	// Use wire to initialize the app parameters with test clients
-	appParams, err := wiring.InitializeTestAppParamsWithClientMocks(config.GetConfig(), authMiddleware, testClients)
+	db := db.DB(context.Background())
+	appParams, err := wiring.InitializeTestAppParamsWithClientMocks(config.GetConfig(), db, authMiddleware, testClients)
 	if err != nil {
 		t.Fatalf("failed to initialize test app params: %v", err)
 	}
 
 	// Create HTTP handler
-	handler := api.MakeHTTPHandler(appParams)
+	handler := api.MakeHTTPHandler(appParams, nil)
 
 	// Return the handler instance
 	return handler

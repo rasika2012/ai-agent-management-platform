@@ -3,8 +3,7 @@
  *
  * WSO2 LLC. licenses this file to you under the Apache License,
  * Version 2.0 (the "License"); you may not use this file except
- * in compliance with the License.
- * You may obtain a copy of the License at
+ * in compliance with the License. You may obtain a copy of the License at
  *
  * http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -19,9 +18,10 @@
 import { OverviewComponent } from './Overview.Component';
 import { OverviewProject } from './Overview.Project';
 import { OverviewOrganization } from './Overview.Organization';
+import type { PageMetadata } from '@agent-management-platform/types';
 import { Home } from '@wso2/oxygen-ui-icons-react';
 
-export const metaData = {
+export const metaData: PageMetadata = {
   title: 'Overview',
   description: 'A page component for Overview',
   icon: Home,
@@ -34,10 +34,6 @@ export const metaData = {
   },
 };
 
-export { 
-  OverviewComponent,
-  OverviewProject,
-  OverviewOrganization,
-};
+export { OverviewComponent, OverviewProject, OverviewOrganization };
 
 export default OverviewComponent;

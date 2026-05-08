@@ -1,4 +1,9 @@
-.PHONY: help setup setup-colima setup-k3d setup-openchoreo setup-platform setup-console-local setup-console-local-force dev-up dev-down dev-restart dev-rebuild dev-logs openchoreo-up openchoreo-down openchoreo-status teardown db-connect db-logs service-logs service-shell console-logs port-forward
+.PHONY: help setup setup-colima setup-k3d setup-openchoreo setup-platform setup-console-local setup-console-local-force dev-up dev-down dev-restart dev-rebuild dev-logs dev-migrate openchoreo-up openchoreo-down openchoreo-status teardown db-connect db-logs service-logs service-shell console-logs port-forward gen-eval-artifacts e2e-test
+
+# Absolute path to the console directory on the host. Passed to docker-compose
+# so the container mounts and builds at the same path, keeping rush/pnpm
+# symlinks valid on both the host and inside the container.
+export CONSOLE_HOST_PATH := $(realpath $(CURDIR)/console)
 
 # Default target
 help:
@@ -14,12 +19,12 @@ help:
 	@echo "  make setup-console-local-force - Force reinstall console deps"
 	@echo ""
 	@echo "💻 Daily Development:"
-	@echo "  make dev-up             - Start platform services (console, service, db)"
-	@echo "  make dev-down           - Stop platform services"
-	@echo "  make dev-restart        - Restart platform services"
-	@echo "  make dev-rebuild        - Rebuild images and restart services"
-	@echo "  make dev-logs           - Tail all platform logs"
-	@echo "  make dev-migrate        - Run database migrations in service container"
+	@echo "  make dev-up                  - Start platform services (console, service, db)"
+	@echo "  make dev-down                - Stop platform services"
+	@echo "  make dev-restart             - Restart platform services"
+	@echo "  make dev-rebuild             - Rebuild images and restart services"
+	@echo "  make dev-logs                - Tail all platform logs"
+	@echo "  make dev-migrate             - Generate evaluators and run database migrations"
 	@echo ""
 	@echo "☸️  OpenChoreo Runtime:"
 	@echo "  make openchoreo-up      - Start OpenChoreo cluster"
@@ -36,12 +41,22 @@ help:
 	@echo "  make service-shell      - Shell into service container"
 	@echo "  make console-logs       - View console logs"
 	@echo ""
+	@echo "🔧 Code Generation:"
+	@echo "  make gen-eval-artifacts - Regenerate evaluator Go catalog + console TS models"
+	@echo ""
+	@echo "amctl CLI:"
+	@echo "  make amctl-build             - Build amctl for current platform"
+	@echo "  make amctl-release-dry-run   - Cross-compile all targets without publishing"
+	@echo "  make amctl-test              - Run amctl tests"
+	@echo "🧪 E2E Tests:"
+	@echo "  make e2e-test           - Run E2E tests (cluster must be running)"
+	@echo ""
 	@echo "🧹 Cleanup:"
 	@echo "  make teardown           - Remove everything (Kind cluster + platform)"
 	@echo ""
 
 # Complete setup
-setup: setup-colima setup-k3d setup-openchoreo .make/kubeconfig-docker-generated setup-platform setup-console-local
+setup: setup-colima setup-k3d setup-openchoreo setup-platform setup-console-local
 	@echo ""
 	@echo "✅ Complete setup finished!"
 	@echo ""
@@ -59,12 +74,17 @@ setup-colima:
 	@cd deployments/scripts && ./setup-colima.sh
 
 setup-k3d:
-	@cd deployments/scripts && ./setup-k3d.sh
+	@cd deployments/scripts && ./setup-k3d.sh && ./setup-prerequisites.sh
 
 setup-openchoreo:
 	@cd deployments/scripts && ./setup-openchoreo.sh $(CURDIR)
 
-setup-platform:
+gen-keys:
+	@echo "🔑 Generating JWT signing keys..."
+	@cd agent-manager-service && make gen-keys
+	@echo "✅ JWT signing keys generated in agent-manager-service/keys/"
+
+setup-platform: gen-keys
 	@cd deployments/scripts && ./setup-platform.sh
 
 # Console local setup with dependency tracking
@@ -96,18 +116,8 @@ setup-console-local-force:
 	@rm -f .make/console-deps-installed .make/console-built
 	@$(MAKE) setup-console-local
 
-# Generate Docker-specific kubeconfig using kind --internal
-.make/kubeconfig-docker-generated: | .make
-	@echo "🔧 Generating Docker kubeconfig..."
-	@rm -f .make/kubeconfig-docker-generated
-	@cd deployments/scripts && ./generate-docker-kubeconfig.sh
-	@touch .make/kubeconfig-docker-generated
-
-setup-kubeconfig-docker: .make/kubeconfig-docker-generated
-	@echo "✅ Docker kubeconfig is ready"
-
 # Daily development commands
-dev-up: setup-console-local .make/kubeconfig-docker-generated
+dev-up: setup-console-local gen-keys
 	@echo "🚀 Starting Agent Manager platform..."
 	@cd deployments && docker compose up -d
 	@echo "✅ Platform is running!"
@@ -143,9 +153,7 @@ dev-logs:
 	@cd deployments && docker compose logs -f
 
 dev-migrate:
-	@echo "🗄️  Running database migrations..."
-	@docker exec agent-manager-service sh -c "go run -mod=readonly . -migrate -server=false"
-	@echo "✅ Migrations completed"
+	@cd agent-manager-service && make dev-migrate
 
 # OpenChoreo lifecycle management
 openchoreo-up:
@@ -205,6 +213,36 @@ service-shell:
 
 console-logs:
 	@docker logs -f agent-manager-console
+
+# amctl CLI client codegen (oapi-codegen against local OpenAPI spec)
+amctl-gen-client:
+	@command -v oapi-codegen >/dev/null || (echo "Installing oapi-codegen..." && go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@latest)
+	@oapi-codegen -config cli/pkg/clients/amsvc/gen/oapi-codegen.yaml agent-manager-service/docs/api_v1_openapi.yaml
+	@oapi-codegen -config cli/pkg/clients/amsvc/gen/oapi-codegen-client.yaml agent-manager-service/docs/api_v1_openapi.yaml
+	@echo "amctl client generated successfully"
+
+# amctl CLI build targets
+amctl-build:
+	scripts/build-amctl.sh --single-target
+
+amctl-release-dry-run:
+	scripts/build-amctl.sh --output-dir dist/
+
+amctl-test:
+	cd cli && go test ./... -v
+
+# Code generation
+gen-eval-artifacts:
+	@echo "Generating evaluator artifacts..."
+	@cd agent-manager-service && make gen-evaluators-dev
+	@bash console/workspaces/pages/eval/scripts/generate-evaluator-models.sh --dev
+	@echo "All evaluator artifacts generated"
+
+# E2E tests
+e2e-test:
+	@echo "Running E2E tests..."
+	@cd test/e2e && set -a && [ -f .env ] && . ./.env; set +a && go run github.com/onsi/ginkgo/v2/ginkgo -v -p --timeout 30m --poll-progress-after=600s ./tests/...
+
 
 # Cleanup
 teardown:

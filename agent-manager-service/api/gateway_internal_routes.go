@@ -1,0 +1,44 @@
+// Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+package api
+
+import (
+	"net/http"
+
+	"github.com/wso2/agent-manager/agent-manager-service/controllers"
+)
+
+// RegisterGatewayInternalRoutes registers all gateway internal API routes
+// These routes use API key authentication instead of JWT
+func RegisterGatewayInternalRoutes(mux *http.ServeMux, ctrl controllers.GatewayInternalController) {
+	// API key bulk-sync endpoints (must be registered before {id} catch-all routes)
+	mux.HandleFunc("GET /llm-providers/api-keys", ctrl.GetLLMProviderAPIKeys)
+	mux.HandleFunc("GET /llm-proxies/api-keys", ctrl.GetLLMProxyAPIKeys)
+	mux.HandleFunc("GET /apis/api-keys", ctrl.GetAPIKeys)
+
+	// Subscription plans endpoint
+	mux.HandleFunc("GET /subscription-plans", ctrl.GetSubscriptionPlans)
+
+	// Gateway manifest endpoint
+	mux.HandleFunc("POST /gateways/{gatewayId}/manifest", ctrl.PushGatewayManifest)
+
+	// LLM Provider endpoints
+	mux.HandleFunc("GET /llm-providers/{providerId}", ctrl.GetLLMProvider)
+
+	// LLM Proxy endpoints
+	mux.HandleFunc("GET /llm-proxies/{proxyId}", ctrl.GetLLMProxy)
+}

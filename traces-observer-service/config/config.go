@@ -20,24 +20,36 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // Config holds all configuration for the tracing service
 type Config struct {
-	Server     ServerConfig
-	OpenSearch OpenSearchConfig
+	Server   ServerConfig
+	Observer ObserverConfig
+	LogLevel string
+	Auth     AuthConfig
+}
+
+// ObserverConfig holds configuration for the observer service HTTP client
+type ObserverConfig struct {
+	BaseURL      string
+	TokenURL     string
+	ClientID     string
+	ClientSecret string
+}
+
+// AuthConfig holds JWT authentication configuration
+type AuthConfig struct {
+	JWKSUrl       string
+	Issuer        []string
+	Audience      []string
+	IsLocalDevEnv bool
 }
 
 // ServerConfig holds HTTP server configuration
 type ServerConfig struct {
 	Port int
-}
-
-// OpenSearchConfig holds OpenSearch connection configuration
-type OpenSearchConfig struct {
-	Address  string
-	Username string
-	Password string
 }
 
 // Load loads configuration from environment variables with defaults
@@ -46,10 +58,18 @@ func Load() (*Config, error) {
 		Server: ServerConfig{
 			Port: getEnvAsInt("TRACES_OBSERVER_PORT", 9098),
 		},
-		OpenSearch: OpenSearchConfig{
-			Address:  getEnv("OPENSEARCH_ADDRESS", "https://localhost:9200"),
-			Username: getEnv("OPENSEARCH_USERNAME", ""),
-			Password: getEnv("OPENSEARCH_PASSWORD", ""),
+		Observer: ObserverConfig{
+			BaseURL:      getEnv("OBSERVER_BASE_URL", ""),
+			TokenURL:     getEnv("IDP_TOKEN_URL", ""),
+			ClientID:     getEnv("IDP_CLIENT_ID", ""),
+			ClientSecret: getEnv("IDP_CLIENT_SECRET", ""),
+		},
+		LogLevel: getEnv("LOG_LEVEL", "INFO"),
+		Auth: AuthConfig{
+			JWKSUrl:       getEnv("KEY_MANAGER_JWKS_URL", ""),
+			Issuer:        getEnvAsList("KEY_MANAGER_ISSUER", "Agent Management Platform Local"),
+			Audience:      getEnvAsList("KEY_MANAGER_AUDIENCE", "localhost"),
+			IsLocalDevEnv: getEnvAsBool("IS_LOCAL_DEV_ENV", false),
 		},
 	}
 
@@ -62,14 +82,46 @@ func Load() (*Config, error) {
 }
 
 func (c *Config) validate() error {
-	if c.OpenSearch.Username == "" || c.OpenSearch.Password == "" {
-		return fmt.Errorf("opensearch username and password are required")
-	}
 	if c.Server.Port <= 0 || c.Server.Port > 65535 {
 		return fmt.Errorf("invalid server port: %d", c.Server.Port)
 	}
-	if c.OpenSearch.Address == "" {
-		return fmt.Errorf("opensearch address is required")
+	if err := c.Auth.validate(); err != nil {
+		return err
+	}
+	if err := c.Observer.validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (o *ObserverConfig) validate() error {
+	if strings.TrimSpace(o.BaseURL) == "" {
+		return fmt.Errorf("OBSERVER_BASE_URL is required")
+	}
+	if strings.TrimSpace(o.TokenURL) == "" {
+		return fmt.Errorf("IDP_TOKEN_URL is required when OBSERVER_BASE_URL is set")
+	}
+	if strings.TrimSpace(o.ClientID) == "" {
+		return fmt.Errorf("IDP_CLIENT_ID is required when OBSERVER_BASE_URL is set")
+	}
+	if strings.TrimSpace(o.ClientSecret) == "" {
+		return fmt.Errorf("IDP_CLIENT_SECRET is required when OBSERVER_BASE_URL is set")
+	}
+	return nil
+}
+
+func (a *AuthConfig) validate() error {
+	if a.IsLocalDevEnv {
+		return nil
+	}
+	if strings.TrimSpace(a.JWKSUrl) == "" {
+		return fmt.Errorf("KEY_MANAGER_JWKS_URL is required when IS_LOCAL_DEV_ENV is false")
+	}
+	if len(a.Issuer) == 0 {
+		return fmt.Errorf("KEY_MANAGER_ISSUER must contain at least one non-empty issuer when IS_LOCAL_DEV_ENV is false")
+	}
+	if len(a.Audience) == 0 {
+		return fmt.Errorf("KEY_MANAGER_AUDIENCE must contain at least one non-empty audience when IS_LOCAL_DEV_ENV is false")
 	}
 	return nil
 }
@@ -89,4 +141,28 @@ func getEnvAsInt(key string, defaultValue int) int {
 		}
 	}
 	return defaultValue
+}
+
+func getEnvAsBool(key string, defaultValue bool) bool {
+	if value := os.Getenv(key); value != "" {
+		return value == "true" || value == "1"
+	}
+	return defaultValue
+}
+
+// getEnvAsList reads a comma-separated environment variable into a []string slice.
+// Falls back to a single-element slice containing defaultValue when the variable is unset.
+func getEnvAsList(key, defaultValue string) []string {
+	value := os.Getenv(key)
+	if value == "" {
+		return []string{defaultValue}
+	}
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
 }

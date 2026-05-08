@@ -13,12 +13,16 @@
     "dev": "tsc -b --watch",
     "lint:fix": "eslint . --fix"
   },
-  "keywords": ["api", "client", "agent management platform"],
+  "keywords": [
+    "api",
+    "client",
+    "agent management platform"
+  ],
   "author": "",
   "license": "ISC",
   "devDependencies": {
     "typescript": "5.9.3",
-    "@types/react": "19.1.16",
+    "@types/react": "19.2.14",
     "@types/react-dom": "19.1.9",
     "@types/lodash": "4.17.17",
     "eslint": "9.36.0"
@@ -27,7 +31,7 @@
     "@babel/runtime-corejs3": "7.11.2"
   },
   "dependencies": {
-    "@asgardeo/auth-react": "3.0.0",
+    "@asgardeo/react": "0.22.4",
     "react-router-dom": "6.28.0",
     "react": "19.1.1",
     "react-dom": "19.1.1",
@@ -35,10 +39,10 @@
     "@agent-management-platform/eslint-config": "workspace:*",
     "@tanstack/react-query": "5.90.5",
     "clsx": "2.1.1",
-    "dayjs": "1.11.18",
+    "date-fns": "4.1.0",
     "lodash": "4.17.21",
-    "yup": "1.4.0",
-    "@agent-management-platform/auth": "workspace:*"
+    "zod": "4.3.6",
+    "@agent-management-platform/auth": "workspace:*",
+    "@agent-management-platform/views": "workspace:*"
   }
 }
-

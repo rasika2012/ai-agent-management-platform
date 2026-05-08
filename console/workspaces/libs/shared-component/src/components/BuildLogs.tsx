@@ -21,24 +21,17 @@ import {
   useGetBuildLogs,
 } from "@agent-management-platform/api-client";
 import {
-  NoDataFound,
   DrawerHeader,
   DrawerContent,
+  LogsPanel,
 } from "@agent-management-platform/views";
-import {
-  FileText as DescriptionOutlined,
-  RefreshCw as RefreshOutlined,
-  Logs,
-} from "@wso2/oxygen-ui-icons-react";
-import {
-  Box,
-  Typography,
-  Alert,
-  Collapse,
-  Skeleton,
-  Button,
-} from "@wso2/oxygen-ui";
+import { Clock, FileText, Logs } from "@wso2/oxygen-ui-icons-react";
+import { Alert, Box, Skeleton, Stack, Typography } from "@wso2/oxygen-ui";
 import { BuildSteps } from "./BuildSteps";
+import { formatDistanceToNow } from "date-fns";
+
+import { getErrorMessage } from "../utils/errorHelpers";
+import { useMemo } from "react";
 
 export interface BuildLogsProps {
   onClose: () => void;
@@ -48,26 +41,11 @@ export interface BuildLogsProps {
   buildName: string;
 }
 
-function LogsSkeleton() {
-  return (
-    <Box display="flex" flexDirection="column" gap={1}>
-      <Skeleton variant="rounded" height={20} />
-      <Skeleton variant="rounded" height={20} />
-      <Skeleton variant="rounded" height={20} />
-      <Skeleton variant="rounded" height={20} />
-      <Skeleton variant="rounded" height={20} />
-      <Skeleton variant="rounded" height={20} />
-      <Skeleton variant="rounded" height={20} />
-      <Skeleton variant="rounded" height={20} />
-      <Skeleton variant="rounded" height={20} />
-    </Box>
-  );
-}
-
 const InfoLoadingSkeleton = () => (
   <Box display="flex" flexDirection="column" gap={1}>
     <Skeleton variant="rounded" height={24} width={200} />
-    <Skeleton variant="rounded" height={15} width={150} />
+    <Skeleton variant="rounded" height={32} width="100%" />
+    <Skeleton variant="rectangular" height={300} width="100%" />
   </Box>
 );
 
@@ -79,18 +57,6 @@ export function BuildLogs({
   onClose,
 }: BuildLogsProps) {
   const {
-    data: buildLogs,
-    error,
-    isLoading,
-    refetch,
-  } = useGetBuildLogs({
-    orgName,
-    projName,
-    agentName,
-    buildName,
-  });
-
-  const {
     data: build,
     isLoading: isBuildLoading,
     error: buildError,
@@ -101,6 +67,22 @@ export function BuildLogs({
     buildName,
   });
 
+  const {
+    data: buildLogs,
+    error,
+    isLoading,
+  } = useGetBuildLogs(
+    {
+      orgName,
+      projName,
+      agentName,
+      buildName,
+    },
+    build?.status
+  );
+
+  const reversedBuildLogs = useMemo(() => buildLogs ? [...buildLogs].reverse() : [], [buildLogs]);
+
   const getEmptyStateMessage = () => {
     if (error) {
       return {
@@ -110,10 +92,7 @@ export function BuildLogs({
       };
     }
 
-    if (
-      build?.status === "BuildInProgress" ||
-      build?.status === "BuildTriggered"
-    ) {
+    if (build?.status === "Running" || build?.status === "Pending") {
       return {
         title: "Logs Being Generated",
         subtitle:
@@ -121,7 +100,7 @@ export function BuildLogs({
       };
     }
 
-    if (build?.status === "BuildFailed") {
+    if (build?.status === "Failed") {
       return {
         title: "Unable to Retrieve Logs",
         subtitle:
@@ -137,96 +116,46 @@ export function BuildLogs({
   };
 
   const emptyState = getEmptyStateMessage();
+  const logsEmptyState = {
+    title: emptyState.title,
+    description: emptyState.subtitle,
+    illustration: <FileText size={64} />,
+  };
 
   return (
-    <Box display="flex" flexDirection="column" height="100%">
+    <Stack direction="column" height="100%" maxWidth={900}>
       <DrawerHeader
         icon={<Logs size={24} />}
         title="Build Details"
         onClose={onClose}
       />
       <DrawerContent>
-        {buildLogs?.length && (
-          <Typography variant="body2" color="text.secondary">
-            Build execution logs and output.
-          </Typography>
-        )}
-        <Box display="flex" flexDirection="column" gap={2}>
-          <Box>
-            {isBuildLoading && <InfoLoadingSkeleton />}
-            {build && <BuildSteps build={build} />}
-          </Box>
-          <Box
-            height="calc(100vh - 200px)"
-            display="flex"
-            gap={1}
-            flexDirection="column"
-            overflow="auto"
-          >
-            <Box
-              display="flex"
-              justifyContent="space-between"
-              alignItems="center"
-            >
-              <Typography variant="h6">Logs</Typography>
-
-              <Button
-                size="small"
-                startIcon={<RefreshOutlined size={16} />}
-                onClick={() => refetch()}
-                variant="outlined"
-                disabled={isLoading}
-              >
-                Refresh
-              </Button>
-            </Box>
-            {isLoading && <LogsSkeleton />}
-            {!!buildLogs?.length && (
-              <Typography
-                component="code"
-                variant="caption"
-                fontFamily="monospace"
-              >
-                {buildLogs?.map((log) => log.log).join("\n")}
+        <Stack direction="column" gap={2} height="calc(100vh - 72px)">
+          {build?.startedAt && (
+            <Stack direction="row" gap={1} alignItems="center">
+              <Clock size={16} />
+              <Typography variant="body2" color="text.secondary">
+                Triggered {formatDistanceToNow(new Date(build.startedAt), { addSuffix: true })}
               </Typography>
-            )}
-            {!buildLogs?.length && !isLoading && (
-              <NoDataFound
-                message={emptyState.title}
-                subtitle={emptyState.subtitle}
-                icon={
-                  <Box
-                    sx={{
-                      fontSize: 100,
-                      mb: 2,
-                      opacity: 0.2,
-                      display: "inline-flex",
-                    }}
-                  >
-                    <DescriptionOutlined size={100} color="inherit" />
-                  </Box>
-                }
-              />
-            )}
-          </Box>
-        </Box>
-        <Box display="flex" flexDirection="column" gap={1}>
-          <Collapse in={!!error}>
+            </Stack>
+          )}
+          {(!!buildError) && (
             <Alert severity="error">
-              {error?.message
-                ? error.message
-                : "Failed to load build logs. Please try refreshing."}
+              {getErrorMessage(buildError)}
             </Alert>
-          </Collapse>
-          <Collapse in={!!buildError}>
-            <Alert severity="error">
-              {buildError?.message
-                ? buildError.message
-                : "Failed to load build details."}
-            </Alert>
-          </Collapse>
-        </Box>
+          )}
+          {isBuildLoading && <InfoLoadingSkeleton />}
+          {build && <BuildSteps build={build} />}
+          <LogsPanel
+            logs={reversedBuildLogs}
+            isLoading={isLoading}
+            error={error}
+            showSearch={false}
+            maxHeight="calc(100vh - 172px)"
+            emptyState={logsEmptyState}
+          />
+        </Stack>
       </DrawerContent>
-    </Box>
+    </Stack>
   );
 }

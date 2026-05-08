@@ -1,73 +1,65 @@
 #!/bin/bash
 set -e
-
-CLUSTER_NAME="openchoreo-local-v0.7"
-CLUSTER_CONTEXT="k3d-${CLUSTER_NAME}"
+# Get the absolute directory of this script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Change to script directory to ensure consistent working directory
+cd "$SCRIPT_DIR"
+source "$SCRIPT_DIR/env.sh"
+source "$SCRIPT_DIR/utils.sh"
 
 echo "=== Setting up k3d Cluster for OpenChoreo ==="
-
-# Check prerequisites
-if ! command -v k3d &> /dev/null; then
-    echo "❌ k3d is not installed. Please install it first:"
-    echo "   brew install k3d"
-    exit 1
-fi
-
-if ! command -v kubectl &> /dev/null; then
-    echo "❌ kubectl is not installed. Please install it first:"
-    echo "   brew install kubectl"
-    exit 1
-fi
 
 # Check if cluster already exists
 if k3d cluster list 2>/dev/null | grep -q "${CLUSTER_NAME}"; then
     echo "✅ k3d cluster '${CLUSTER_NAME}' already exists"
-    
-    # Verify cluster is running
-    if kubectl cluster-info --context ${CLUSTER_CONTEXT} &>/dev/null; then
-        echo "✅ Cluster is running and accessible"
-    else
-        echo "⚠️  Cluster exists but is not accessible. Starting cluster..."
-        k3d cluster start ${CLUSTER_NAME}
-        
-        # Wait for cluster to be ready
-        echo "⏳ Waiting for cluster to be ready..."
-        for i in {1..30}; do
-            if kubectl cluster-info --context ${CLUSTER_CONTEXT} &>/dev/null; then
-                echo "✅ Cluster is now ready"
-                break
-            fi
-            sleep 2
-        done
-    fi
-    
+
+    ensure_cluster_accessible
+
     echo ""
     echo "Cluster info:"
     kubectl cluster-info --context ${CLUSTER_CONTEXT}
     echo ""
     echo "✅ Using existing cluster"
-    echo "⚠️  If you want to recreate the cluster, delete it first:"
-    echo "   k3d cluster delete ${CLUSTER_NAME}"
-    exit 0
+else
+    # Check port availability before creating cluster
+    if ! check_required_ports; then
+        exit 1
+    fi
+
+    # Create /tmp/k3d-shared directory for OpenChoreo
+    echo "📁 Creating shared directory for OpenChoreo..."
+    mkdir -p /tmp/k3d-shared
+
+    # Create k3d cluster with OpenChoreo configuration
+    echo "🚀 Creating k3d cluster with OpenChoreo configuration..."
+    k3d cluster create --config ../k3d-local-config.yaml
+
+    echo ""
+    echo "✅ k3d cluster created successfully!"
+
+    refresh_kubeconfig
+
+    if ! wait_for_cluster; then
+        echo "❌ Cluster failed to become ready after 30 attempts"
+        echo "   Try running: k3d kubeconfig merge ${CLUSTER_NAME} --kubeconfig-merge-default --kubeconfig-switch-context"
+        exit 1
+    fi
 fi
 
-# Create /tmp/k3d-shared directory for OpenChoreo
-echo "📁 Creating shared directory for OpenChoreo..."
-mkdir -p /tmp/k3d-shared
-
-# Create k3d cluster with OpenChoreo configuration
-echo "🚀 Creating k3d cluster with OpenChoreo configuration..."
-k3d cluster create --config ../single-cluster-config.yaml
-
+# Apply CoreDNS custom configuration for *.openchoreo.localhost and *.amp.localhost resolution
 echo ""
-echo "✅ k3d cluster created successfully!"
-echo ""
-echo "📊 Cluster Info:"
-kubectl cluster-info --context ${CLUSTER_CONTEXT}
+echo "🔧 Applying CoreDNS custom configuration..."
+if ! kubectl apply --context "${CLUSTER_CONTEXT}" -f "$SCRIPT_DIR/../k8s/coredns-amp-custom.yaml"; then
+    echo "❌ Failed to apply CoreDNS custom configuration"
+    exit 1
+fi
+if ! kubectl get configmap coredns-custom -n kube-system --context "${CLUSTER_CONTEXT}" &>/dev/null; then
+    echo "❌ CoreDNS custom ConfigMap not found after apply"
+    exit 1
+fi
+echo "✅ CoreDNS configured to resolve *.openchoreo.localhost and *.amp.localhost"
 
+# Generate Machine IDs for observability
 echo ""
-echo "🔍 Cluster Nodes:"
-kubectl get nodes
-
+generate_machine_ids "$CLUSTER_NAME"
 echo ""
-echo "✅ Setup complete! You can now proceed with OpenChoreo installation."

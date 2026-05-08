@@ -1,0 +1,634 @@
+// Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+package client
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	"github.com/wso2/agent-manager/agent-manager-service/clients/openchoreosvc/gen"
+	"github.com/wso2/agent-manager/agent-manager-service/config"
+	"github.com/wso2/agent-manager/agent-manager-service/models"
+	"github.com/wso2/agent-manager/agent-manager-service/utils"
+)
+
+func (c *openChoreoClient) Deploy(ctx context.Context, orgName, projectName, componentName string, req DeployRequest) error {
+	// List workloads to find the one for this component
+	workloadResp, err := c.ocClient.ListWorkloadsWithResponse(ctx, orgName, &gen.ListWorkloadsParams{
+		Component: &componentName,
+		Limit:     &defaultListLimit,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list workloads: %w", err)
+	}
+
+	if workloadResp.StatusCode() != http.StatusOK {
+		return handleErrorResponse(workloadResp.StatusCode(), ErrorResponses{
+			JSON401: workloadResp.JSON401,
+			JSON403: workloadResp.JSON403,
+			JSON404: workloadResp.JSON404,
+			JSON500: workloadResp.JSON500,
+		})
+	}
+
+	if workloadResp.JSON200 == nil || len(workloadResp.JSON200.Items) == 0 {
+		return fmt.Errorf("no workload found for component")
+	}
+
+	workload := workloadResp.JSON200.Items[0]
+	workloadName := workload.Metadata.Name
+
+	// Update the container image and environment variables
+	if workload.Spec == nil {
+		workload.Spec = &gen.WorkloadSpec{}
+	}
+	if workload.Spec.Container == nil {
+		workload.Spec.Container = &gen.WorkloadContainer{}
+	}
+
+	// Update image
+	workload.Spec.Container.Image = req.ImageID
+
+	// Update environment variables if provided (nil means no change, empty slice means clear all)
+	if req.Env != nil {
+		var envVars []gen.EnvVar
+		for _, env := range req.Env {
+			genEnvVar := gen.EnvVar{
+				Key: env.Key,
+			}
+			if env.ValueFrom != nil && env.ValueFrom.SecretKeyRef != nil {
+				// Secret env var - use ValueFrom with SecretKeyRef
+				secretName := env.ValueFrom.SecretKeyRef.Name
+				secretKey := env.ValueFrom.SecretKeyRef.Key
+				genEnvVar.ValueFrom = &gen.EnvVarValueFrom{
+					SecretKeyRef: &struct {
+						Key  *string `json:"key,omitempty"`
+						Name *string `json:"name,omitempty"`
+					}{
+						Name: &secretName,
+						Key:  &secretKey,
+					},
+				}
+			} else {
+				// Plain env var - use Value directly
+				value := env.Value
+				genEnvVar.Value = &value
+			}
+			envVars = append(envVars, genEnvVar)
+		}
+		workload.Spec.Container.Env = &envVars
+	}
+
+	// Update workload
+	updateResp, err := c.ocClient.UpdateWorkloadWithResponse(ctx, orgName, workloadName, workload)
+	if err != nil {
+		return fmt.Errorf("failed to update workload: %w", err)
+	}
+
+	if updateResp.StatusCode() != http.StatusOK {
+		return handleErrorResponse(updateResp.StatusCode(), ErrorResponses{
+			JSON401: updateResp.JSON401,
+			JSON403: updateResp.JSON403,
+			JSON404: updateResp.JSON404,
+			JSON500: updateResp.JSON500,
+		})
+	}
+
+	// Set restartedAt on the ReleaseBinding to force a pod rollout.
+	// This ensures pods pick up updated secret values, since secret references
+	// in the spec don't change when the underlying secret value changes.
+	if req.Environment != "" {
+		if err := c.setRestartedAt(ctx, orgName, componentName, req.Environment); err != nil {
+			return fmt.Errorf("failed to set restartedAt: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// setRestartedAt updates restartedAt on the ReleaseBinding for the given environment to trigger a pod rollout.
+func (c *openChoreoClient) setRestartedAt(ctx context.Context, namespaceName, componentName, envName string) error {
+	listResp, err := c.ocClient.ListReleaseBindingsWithResponse(ctx, namespaceName, &gen.ListReleaseBindingsParams{
+		Component: &componentName,
+		Limit:     &defaultListLimit,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list release bindings: %w", err)
+	}
+	if listResp.StatusCode() != http.StatusOK {
+		return handleErrorResponse(listResp.StatusCode(), ErrorResponses{
+			JSON401: listResp.JSON401,
+			JSON403: listResp.JSON403,
+			JSON404: listResp.JSON404,
+			JSON500: listResp.JSON500,
+		})
+	}
+	if listResp.JSON200 == nil || len(listResp.JSON200.Items) == 0 {
+		return nil
+	}
+
+	var found bool
+	for i := range listResp.JSON200.Items {
+		binding := &listResp.JSON200.Items[i]
+		if binding.Spec == nil || binding.Spec.Environment != envName {
+			continue
+		}
+		found = true
+		if binding.Spec.ComponentTypeEnvironmentConfigs == nil {
+			overrides := make(map[string]interface{})
+			binding.Spec.ComponentTypeEnvironmentConfigs = &overrides
+		}
+		(*binding.Spec.ComponentTypeEnvironmentConfigs)["restartedAt"] = time.Now().Format(time.RFC3339)
+
+		updateResp, err := c.ocClient.UpdateReleaseBindingWithResponse(ctx, namespaceName, binding.Metadata.Name, *binding)
+		if err != nil {
+			return fmt.Errorf("failed to update release binding %s: %w", binding.Metadata.Name, err)
+		}
+		if updateResp.StatusCode() != http.StatusOK {
+			return handleErrorResponse(updateResp.StatusCode(), ErrorResponses{
+				JSON401: updateResp.JSON401,
+				JSON403: updateResp.JSON403,
+				JSON404: updateResp.JSON404,
+				JSON500: updateResp.JSON500,
+			})
+		}
+		break
+	}
+
+	if !found {
+		slog.Warn("no release binding found for environment during deploy, pod rollout may not be triggered",
+			"component", componentName, "environment", envName)
+	}
+
+	return nil
+}
+
+func (c *openChoreoClient) GetDeployments(ctx context.Context, orgName, pipelineName, projectName, componentName string) ([]*models.DeploymentResponse, error) {
+	// Get the deployment pipeline for environment ordering
+	pipeline, err := c.GetProjectDeploymentPipeline(ctx, orgName, projectName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get deployment pipeline: %w", err)
+	}
+
+	// Get all environments for display names
+	environments, err := c.ListEnvironments(ctx, orgName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list environments: %w", err)
+	}
+
+	// Create environment order based on the deployment pipeline
+	environmentOrder := buildEnvironmentOrder(pipeline.PromotionPaths)
+
+	// Get release bindings for the component
+	bindingsResp, err := c.ocClient.ListReleaseBindingsWithResponse(ctx, orgName, &gen.ListReleaseBindingsParams{
+		Component: &componentName,
+		Limit:     &defaultListLimit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list release bindings: %w", err)
+	}
+
+	if bindingsResp.StatusCode() != http.StatusOK {
+		return nil, handleErrorResponse(bindingsResp.StatusCode(), ErrorResponses{
+			JSON401: bindingsResp.JSON401,
+			JSON403: bindingsResp.JSON403,
+			JSON404: bindingsResp.JSON404,
+			JSON500: bindingsResp.JSON500,
+		})
+	}
+
+	// Create a map of release bindings by environment for quick lookup
+	releaseBindingMap := make(map[string]*gen.ReleaseBinding)
+	if bindingsResp.JSON200 != nil {
+		for i := range bindingsResp.JSON200.Items {
+			binding := &bindingsResp.JSON200.Items[i]
+			if binding.Spec != nil {
+				releaseBindingMap[binding.Spec.Environment] = binding
+			}
+		}
+	}
+
+	// Create environment map for quick lookup
+	environmentMap := make(map[string]*models.EnvironmentResponse)
+	for _, env := range environments {
+		environmentMap[env.Name] = env
+	}
+
+	// Fetch workload to get endpoint visibility and schema info
+	workloadEndpoints := make(map[string]*gen.WorkloadEndpoint)
+	var liveWorkloadContainerImage string
+	workloadResp, err := c.ocClient.ListWorkloadsWithResponse(ctx, orgName, &gen.ListWorkloadsParams{
+		Component: &componentName,
+		Limit:     &defaultListLimit,
+	})
+	if err == nil && workloadResp.StatusCode() == http.StatusOK && workloadResp.JSON200 != nil && len(workloadResp.JSON200.Items) > 0 {
+		workload := workloadResp.JSON200.Items[0]
+		if workload.Spec != nil && workload.Spec.Container != nil && workload.Spec.Container.Image != "" {
+			liveWorkloadContainerImage = workload.Spec.Container.Image
+		}
+		if workload.Spec != nil && workload.Spec.Endpoints != nil {
+			for name, ep := range *workload.Spec.Endpoints {
+				epCopy := ep
+				workloadEndpoints[name] = &epCopy
+			}
+		}
+	}
+
+	// List all ComponentReleases for the component and create a map by release name
+	componentReleaseMap := make(map[string]*gen.ComponentRelease)
+	releasesResp, err := c.ocClient.ListComponentReleasesWithResponse(ctx, orgName, &gen.ListComponentReleasesParams{
+		Component: &componentName,
+		Limit:     &defaultListLimit,
+	})
+	if err == nil && releasesResp.StatusCode() == http.StatusOK && releasesResp.JSON200 != nil {
+		for i := range releasesResp.JSON200.Items {
+			release := &releasesResp.JSON200.Items[i]
+			componentReleaseMap[release.Metadata.Name] = release
+		}
+	}
+
+	// Construct deployment details in the order defined by the pipeline
+	var deploymentDetails []*models.DeploymentResponse
+	for _, envName := range environmentOrder {
+		// Find promotion target environment for this environment
+		promotionTargetEnv := findPromotionTargetEnvironment(envName, pipeline.PromotionPaths, environmentMap)
+
+		if releaseBinding, exists := releaseBindingMap[envName]; exists {
+			// Look up the ComponentRelease from the map using the release name from the binding
+			var componentRelease *gen.ComponentRelease
+			if releaseBinding.Spec.ReleaseName != nil && *releaseBinding.Spec.ReleaseName != "" {
+				componentRelease = componentReleaseMap[*releaseBinding.Spec.ReleaseName]
+			}
+
+			deploymentDetail, err := toDeploymentDetailsResponse(releaseBinding, componentRelease, environmentMap, promotionTargetEnv, workloadEndpoints, liveWorkloadContainerImage)
+			if err != nil {
+				return nil, fmt.Errorf("failed to build deployment details for environment %s: %w", envName, err)
+			}
+			deploymentDetails = append(deploymentDetails, deploymentDetail)
+		} else {
+			var displayName string
+			if env, envExists := environmentMap[envName]; envExists {
+				displayName = env.DisplayName
+			}
+
+			deploymentDetails = append(deploymentDetails, &models.DeploymentResponse{
+				Environment:                envName,
+				EnvironmentDisplayName:     displayName,
+				PromotionTargetEnvironment: promotionTargetEnv,
+				Status:                     DeploymentStatusNotDeployed,
+				Endpoints:                  []models.Endpoint{},
+			})
+		}
+	}
+
+	return deploymentDetails, nil
+}
+
+// FindFirstEnvironment returns the name of the first (source/dev) environment
+// from the deployment pipeline promotion paths, or "" if none.
+func FindFirstEnvironment(promotionPaths []models.PromotionPath) string {
+	order := buildEnvironmentOrder(promotionPaths)
+	if len(order) == 0 {
+		return ""
+	}
+	return order[0]
+}
+
+// buildEnvironmentOrder creates an ordered list of environments based on promotion paths
+func buildEnvironmentOrder(promotionPaths []models.PromotionPath) []string {
+	if len(promotionPaths) == 0 {
+		return []string{}
+	}
+
+	var order []string
+	visited := make(map[string]bool)
+
+	// Start with source environments
+	for _, path := range promotionPaths {
+		if !visited[path.SourceEnvironmentRef] {
+			order = append(order, path.SourceEnvironmentRef)
+			visited[path.SourceEnvironmentRef] = true
+		}
+
+		// Add target environments
+		for _, target := range path.TargetEnvironmentRefs {
+			if !visited[target.Name] {
+				order = append(order, target.Name)
+				visited[target.Name] = true
+			}
+		}
+	}
+
+	return order
+}
+
+// IsDeploymentInProgress checks whether the release binding for the given component and environment
+// has a deployment currently in progress (ResourcesReady condition with ResourcesProgressing reason).
+func (c *openChoreoClient) IsDeploymentInProgress(ctx context.Context, namespaceName, componentName, environment string) (bool, error) {
+	resp, err := c.ocClient.ListReleaseBindingsWithResponse(ctx, namespaceName, &gen.ListReleaseBindingsParams{
+		Component: &componentName,
+		Limit:     &defaultListLimit,
+	})
+	if err != nil {
+		return false, fmt.Errorf("failed to list release bindings: %w", err)
+	}
+
+	if resp.StatusCode() != http.StatusOK {
+		return false, handleErrorResponse(resp.StatusCode(), ErrorResponses{
+			JSON401: resp.JSON401,
+			JSON403: resp.JSON403,
+			JSON500: resp.JSON500,
+		})
+	}
+
+	if resp.JSON200 == nil {
+		return false, nil
+	}
+
+	// Find the release binding for the target environment
+	for i := range resp.JSON200.Items {
+		binding := &resp.JSON200.Items[i]
+		if binding.Spec != nil && binding.Spec.Environment == environment {
+			status := determineDeploymentStatus(binding)
+			return status == DeploymentStatusInProgress, nil
+		}
+	}
+
+	return false, nil
+}
+
+// determineDeploymentStatus determines deployment status from release binding conditions
+func determineDeploymentStatus(binding *gen.ReleaseBinding) string {
+	if binding == nil {
+		return DeploymentStatusNotDeployed
+	}
+
+	// Check if the binding state is set to Undeploy (suspended)
+	if binding.Spec != nil && binding.Spec.State != nil && *binding.Spec.State == gen.ReleaseBindingSpecStateUndeploy {
+		return DeploymentStatusSuspended
+	}
+
+	if binding.Status == nil || binding.Status.Conditions == nil {
+		return DeploymentStatusNotDeployed
+	}
+
+	// Check conditions for status
+	for _, condition := range *binding.Status.Conditions {
+		// Look for "Ready" condition
+		if condition.Type == "Ready" {
+			switch condition.Status {
+			case "True":
+				return DeploymentStatusActive
+			case "False":
+				// Check reason for more specific status
+				switch condition.Reason {
+				case "Progressing", "Pending", "ResourcesProgressing":
+					return DeploymentStatusInProgress
+				case "Failed", "Error":
+					return DeploymentStatusFailed
+				}
+				return DeploymentStatusFailed
+			}
+		}
+	}
+
+	return DeploymentStatusInProgress
+}
+
+func findPromotionTargetEnvironment(sourceEnvName string, promotionPaths []models.PromotionPath, environmentMap map[string]*models.EnvironmentResponse) *models.PromotionTargetEnvironment {
+	for _, path := range promotionPaths {
+		if path.SourceEnvironmentRef != sourceEnvName {
+			continue
+		}
+
+		// Since promotion is linear, take the first (and only) target
+		if len(path.TargetEnvironmentRefs) == 0 {
+			return nil
+		}
+
+		targetEnvName := path.TargetEnvironmentRefs[0].Name
+		var targetDisplayName string
+		if env, exists := environmentMap[targetEnvName]; exists {
+			targetDisplayName = env.DisplayName
+		}
+		return &models.PromotionTargetEnvironment{
+			Name:        targetEnvName,
+			DisplayName: targetDisplayName,
+		}
+	}
+	return nil
+}
+
+func toDeploymentDetailsResponse(binding *gen.ReleaseBinding, componentRelease *gen.ComponentRelease, environmentMap map[string]*models.EnvironmentResponse, promotionTargetEnv *models.PromotionTargetEnvironment, workloadEndpoints map[string]*gen.WorkloadEndpoint, liveWorkloadContainerImage string) (*models.DeploymentResponse, error) {
+	if binding == nil || binding.Spec == nil {
+		return nil, fmt.Errorf("release binding is nil or has no spec")
+	}
+
+	status := determineDeploymentStatus(binding)
+
+	// Extract endpoints from release binding status, enriched with workload endpoint info
+	endpoints := extractEndpointsFromBinding(binding, workloadEndpoints)
+
+	deployedImage := findDeployedImageFromComponentRelease(componentRelease)
+	if deployedImage == "" && liveWorkloadContainerImage != "" {
+		deployedImage = liveWorkloadContainerImage
+	}
+
+	environment := binding.Spec.Environment
+	var environmentDisplayName string
+	if env, exists := environmentMap[environment]; exists {
+		environmentDisplayName = env.DisplayName
+	}
+
+	// Use the Ready condition's LastTransitionTime for accurate last deployed time,
+	// falling back to CreationTimestamp if no Ready condition is found
+	lastDeployedAt := getLastDeployedTime(binding)
+
+	return &models.DeploymentResponse{
+		ImageId:                    deployedImage,
+		Status:                     status,
+		Environment:                environment,
+		EnvironmentDisplayName:     environmentDisplayName,
+		PromotionTargetEnvironment: promotionTargetEnv,
+		LastDeployedAt:             lastDeployedAt,
+		Endpoints:                  endpoints,
+	}, nil
+}
+
+// getLastDeployedTime extracts the most accurate last deployed time from a ReleaseBinding.
+// It looks for the Ready condition's LastTransitionTime, falling back to CreationTimestamp.
+func getLastDeployedTime(binding *gen.ReleaseBinding) time.Time {
+	// Try to get LastTransitionTime from the Ready condition
+	if binding.Status != nil && binding.Status.Conditions != nil {
+		for _, condition := range *binding.Status.Conditions {
+			if condition.Type == "Ready" {
+				return condition.LastTransitionTime
+			}
+		}
+	}
+
+	// Fall back to CreationTimestamp if no Ready condition found
+	if binding.Metadata.CreationTimestamp != nil {
+		return *binding.Metadata.CreationTimestamp
+	}
+
+	return time.Time{}
+}
+
+// extractEndpointsFromBinding extracts endpoint URLs from the release binding status
+// and enriches them with visibility and schema info from workload endpoints
+func extractEndpointsFromBinding(binding *gen.ReleaseBinding, workloadEndpoints map[string]*gen.WorkloadEndpoint) []models.Endpoint {
+	if binding == nil || binding.Status == nil || binding.Status.Endpoints == nil {
+		return []models.Endpoint{}
+	}
+
+	endpoints := make([]models.Endpoint, 0, len(*binding.Status.Endpoints))
+	for _, ep := range *binding.Status.Endpoints {
+		var urlStr string
+		// Use ExternalURLs based on IsLocalDevEnv config
+		if ep.ExternalURLs != nil {
+			var endpointURL *gen.EndpointURL
+			if config.GetConfig().TLSConfig.EnableTLS {
+				endpointURL = ep.ExternalURLs.Https
+			} else {
+				endpointURL = ep.ExternalURLs.Http
+			}
+			if endpointURL != nil {
+				urlStr = buildEndpointURLString(endpointURL)
+			}
+		}
+
+		endpoint := models.Endpoint{
+			Name: ep.Name,
+			URL:  urlStr,
+		}
+
+		// Enrich with visibility from workload endpoint
+		if workloadEp, exists := workloadEndpoints[ep.Name]; exists {
+			if workloadEp.Visibility != nil && len(*workloadEp.Visibility) > 0 {
+				endpoint.Visibility = string((*workloadEp.Visibility)[0])
+			}
+		}
+
+		endpoints = append(endpoints, endpoint)
+	}
+	return endpoints
+}
+
+// UpdateDeploymentState updates the state of a deployment (Active or Undeploy)
+func (c *openChoreoClient) UpdateDeploymentState(ctx context.Context, namespaceName, projectName, componentName, environment string, state gen.ReleaseBindingSpecState) error {
+	// List release bindings for the component
+	bindingsResp, err := c.ocClient.ListReleaseBindingsWithResponse(ctx, namespaceName, &gen.ListReleaseBindingsParams{
+		Component: &componentName,
+		Limit:     &defaultListLimit,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list release bindings: %w", err)
+	}
+
+	if bindingsResp.StatusCode() != http.StatusOK {
+		return handleErrorResponse(bindingsResp.StatusCode(), ErrorResponses{
+			JSON401: bindingsResp.JSON401,
+			JSON403: bindingsResp.JSON403,
+			JSON404: bindingsResp.JSON404,
+			JSON500: bindingsResp.JSON500,
+		})
+	}
+
+	// Find the binding for the specified environment
+	var targetBinding *gen.ReleaseBinding
+	if bindingsResp.JSON200 != nil {
+		for i := range bindingsResp.JSON200.Items {
+			binding := &bindingsResp.JSON200.Items[i]
+			if binding.Spec != nil && binding.Spec.Environment == environment {
+				targetBinding = binding
+				break
+			}
+		}
+	}
+
+	if targetBinding == nil {
+		return fmt.Errorf("no release binding found for environment %s: %w", environment, utils.ErrNotFound)
+	}
+
+	// Update the state
+	targetBinding.Spec.State = &state
+
+	// Update the release binding
+	bindingName := targetBinding.Metadata.Name
+	updateResp, err := c.ocClient.UpdateReleaseBindingWithResponse(ctx, namespaceName, bindingName, *targetBinding)
+	if err != nil {
+		return fmt.Errorf("failed to update release binding: %w", err)
+	}
+
+	if updateResp.StatusCode() != http.StatusOK {
+		return handleErrorResponse(updateResp.StatusCode(), ErrorResponses{
+			JSON401: updateResp.JSON401,
+			JSON403: updateResp.JSON403,
+			JSON404: updateResp.JSON404,
+			JSON500: updateResp.JSON500,
+		})
+	}
+
+	return nil
+}
+
+// extractImageFromWorkloadMap reads container image from OpenChoreo workload JSON shapes.
+func extractImageFromWorkloadMap(workload map[string]interface{}) string {
+	if len(workload) == 0 {
+		return ""
+	}
+	if img, ok, err := unstructured.NestedString(workload, "spec", "container", "image"); err == nil && ok && img != "" {
+		return img
+	}
+	if img, ok, err := unstructured.NestedString(workload, "container", "image"); err == nil && ok && img != "" {
+		return img
+	}
+	containers, found, err := unstructured.NestedSlice(workload, "spec", "containers")
+	if err == nil && found {
+		for _, c := range containers {
+			cm, ok := c.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if img, ok := cm["image"].(string); ok && img != "" {
+				return img
+			}
+		}
+	}
+	return ""
+}
+
+// findDeployedImageFromComponentRelease extracts the deployed image from the ComponentRelease workload spec
+// The image is located at spec.container.image (or equivalent) within the frozen workload object.
+func findDeployedImageFromComponentRelease(release *gen.ComponentRelease) string {
+	if release == nil || release.Spec == nil {
+		return ""
+	}
+
+	workload := release.Spec.Workload
+	if len(workload) == 0 {
+		return ""
+	}
+
+	return extractImageFromWorkloadMap(workload)
+}

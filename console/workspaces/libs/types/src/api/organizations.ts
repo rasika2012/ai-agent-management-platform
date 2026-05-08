@@ -32,11 +32,16 @@ export interface OrganizationResponse {
   createdAt: string; // ISO date-time
 }
 
+export interface OrganizationListItem {
+  name: string;
+  createdAt: string; // ISO date-time
+}
+
 export interface OrganizationListResponse extends PaginationMeta {
   organizations: OrganizationResponse[];
 }
 
 // Path/Query helpers
 export type ListOrganizationsQuery = ListQuery;
-export type GetOrganizationPathParams = { orgName: string };
+export type GetOrganizationPathParams = { orgName: string | undefined };
 

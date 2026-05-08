@@ -21,29 +21,104 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
+	"time"
 
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/spec"
+	"github.com/wso2/agent-manager/agent-manager-service/spec"
 )
 
-func ValidateAgentCreatePayload(payload spec.CreateAgentRequest) error {
-	// Validate agent name
-	if err := ValidateResourceName(payload.Name, "agent"); err != nil {
-		return fmt.Errorf("invalid agent name: %w", err)
+// MaxReplicasLimit is the maximum number of replicas allowed for agents
+const MaxReplicasLimit = 10
+
+// capitalize returns a string with the first letter capitalized
+func capitalize(s string) string {
+	if len(s) == 0 {
+		return s
 	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+type agentPayload struct {
+	name           string
+	displayName    string
+	provisioning   spec.Provisioning
+	agentType      spec.AgentType
+	build          *spec.Build
+	configuration  *spec.Configurations
+	inputInterface *spec.InputInterface
+}
+
+func ValidateAgentBasicInfoUpdatePayload(payload spec.UpdateAgentBasicInfoRequest) error {
 	if err := ValidateResourceDisplayName(payload.DisplayName, "agent"); err != nil {
-		return fmt.Errorf("invalid agent display name: %w", err)
+		return err
 	}
+	return nil
+}
+
+func ValidateAgentBuildParametersUpdatePayload(payload spec.UpdateAgentBuildParametersRequest) error {
 	// Validate agent provisioning
-	if err := validateAgentProvisioning(payload.Provisioning); err != nil {
-		return fmt.Errorf("invalid agent provisioning: %w", err)
+	if payload.Provisioning.Type != string(InternalAgent) {
+		return fmt.Errorf("provisioning type must be internal")
+	}
+	if payload.AgentType.Type != string(AgentTypeAPI) {
+		return fmt.Errorf("unsupported agent type: %s", payload.AgentType.Type)
+	}
+	// Validate repository details
+	if err := validateRepoDetails(payload.Provisioning.Repository); err != nil {
+		if IsValidationError(err) != nil {
+			return err
+		}
+		return NewValidationError(
+			"Invalid repository configuration",
+			fmt.Sprintf("invalid repository details: %s", err.Error()),
+		)
+	}
+	if err := validateInternalAgentPayload(
+		agentPayload{
+			provisioning:   payload.Provisioning,
+			agentType:      payload.AgentType,
+			build:          &payload.Build,
+			inputInterface: &payload.InputInterface,
+		},
+	); err != nil {
+		return err
 	}
 
-	// Additional validations for internal agents
-	if payload.Provisioning.Type == string(InternalAgent) {
-		if err := validateInternalAgent(payload); err != nil {
+	return nil
+}
+
+func ValidateAgentResourceConfigsPayload(payload spec.UpdateAgentResourceConfigsRequest) error {
+	// Check if autoscaling is enabled
+	autoscalingEnabled := payload.AutoScaling.Enabled != nil && *payload.AutoScaling.Enabled
+
+	// Validate autoscaling config
+	if err := validateAutoScalingConfig(&payload.AutoScaling); err != nil {
+		return err
+	}
+
+	// Validate replicas only when autoscaling is disabled (static scaling)
+	// When autoscaling is enabled, HPA manages replicas between minReplicas and maxReplicas
+	if !autoscalingEnabled {
+		if payload.Replicas < 0 || payload.Replicas > MaxReplicasLimit {
+			return fmt.Errorf("replicas must be between 0 and %d", MaxReplicasLimit)
+		}
+	}
+
+	// Validate resources
+	if payload.Resources.Requests != nil {
+		if err := validateResourceValue(payload.Resources.Requests.Cpu, "CPU request"); err != nil {
+			return err
+		}
+		if err := validateResourceValue(payload.Resources.Requests.Memory, "memory request"); err != nil {
+			return err
+		}
+	}
+	if payload.Resources.Limits != nil {
+		if err := validateResourceValue(payload.Resources.Limits.Cpu, "CPU limit"); err != nil {
+			return err
+		}
+		if err := validateResourceValue(payload.Resources.Limits.Memory, "memory limit"); err != nil {
 			return err
 		}
 	}
@@ -51,42 +126,255 @@ func ValidateAgentCreatePayload(payload spec.CreateAgentRequest) error {
 	return nil
 }
 
-// validateInternalAgent performs validations specific to internal agents
-func validateInternalAgent(payload spec.CreateAgentRequest) error {
-	// Validate agent type and subtype
-	if err := validateAgentType(payload.AgentType); err != nil {
-		return fmt.Errorf("invalid agent type or subtype: %w", err)
+func validateAutoScalingConfig(config *spec.AutoScalingConfig) error {
+	if config == nil {
+		return nil
 	}
 
-	// Validate API input interface for API agents
-	if payload.AgentType.Type == string(AgentTypeAPI) {
-		if err := validateInputInterface(payload.AgentType, payload.InputInterface); err != nil {
-			return fmt.Errorf("invalid inputInterface: %w", err)
+	// enabled is required when autoscaling config is provided
+	if config.Enabled == nil {
+		return fmt.Errorf("autoscaling enabled field is required when updating autoscaling configuration")
+	}
+
+	// When autoscaling is enabled, minReplicas and maxReplicas are required
+	if *config.Enabled {
+		if config.MinReplicas == nil {
+			return fmt.Errorf("autoscaling minReplicas is required when autoscaling is enabled")
+		}
+		if config.MaxReplicas == nil {
+			return fmt.Errorf("autoscaling maxReplicas is required when autoscaling is enabled")
 		}
 	}
 
-	// Validate runtime configurations
-	if payload.RuntimeConfigs == nil {
-		return fmt.Errorf("runtimeConfigs is required for internal agents")
+	// Validate minReplicas if provided
+	if config.MinReplicas != nil {
+		if *config.MinReplicas < 1 {
+			return fmt.Errorf("autoscaling minReplicas must be at least 1")
+		}
 	}
 
-	if err := validateLanguage(payload.RuntimeConfigs.Language, payload.RuntimeConfigs.LanguageVersion); err != nil {
-		return fmt.Errorf("invalid language: %w", err)
+	// Validate maxReplicas if provided
+	if config.MaxReplicas != nil {
+		if *config.MaxReplicas < 1 {
+			return fmt.Errorf("autoscaling maxReplicas must be at least 1")
+		}
+		if *config.MaxReplicas > MaxReplicasLimit {
+			return fmt.Errorf("autoscaling maxReplicas must not exceed %d", MaxReplicasLimit)
+		}
+	}
+
+	// Validate maxReplicas >= minReplicas when both are provided
+	if config.MinReplicas != nil && config.MaxReplicas != nil {
+		if *config.MaxReplicas < *config.MinReplicas {
+			return fmt.Errorf("autoscaling maxReplicas (%d) must be greater than or equal to minReplicas (%d)", *config.MaxReplicas, *config.MinReplicas)
+		}
 	}
 
 	return nil
 }
 
-func validateAgentType(agentType *spec.AgentType) error {
-	if agentType == nil {
-		return fmt.Errorf("agentType is required for internal agents")
+func validateResourceValue(value *string, fieldName string) error {
+	if value == nil || *value == "" {
+		return nil // Optional field
 	}
-	if agentType.Type != string(AgentTypeAPI) {
+
+	// Validate Kubernetes resource-quantity format
+	// Supports formats like: "500m", "2Gi", "1", "0.5", "256Mi", etc.
+	resourceQuantityPattern := `^([0-9]+(\.[0-9]+)?)(m|Ki|Mi|Gi|Ti|Pi|Ei)?$`
+	matched, err := regexp.MatchString(resourceQuantityPattern, *value)
+	if err != nil {
+		return fmt.Errorf("error validating %s: %w", fieldName, err)
+	}
+	if !matched {
+		return fmt.Errorf("%s has invalid format '%s': must be a valid Kubernetes resource quantity (e.g., '500m', '2Gi', '1', '256Mi')", fieldName, *value)
+	}
+
+	return nil
+}
+
+func ValidateProjectUpdatePayload(payload spec.UpdateProjectRequest) error {
+	if err := ValidateResourceDisplayName(payload.DisplayName, "project"); err != nil {
+		return err
+	}
+
+	if payload.DeploymentPipeline == "" {
+		return fmt.Errorf("deployment pipeline cannot be empty")
+	}
+	return nil
+}
+
+func ValidateAgentCreatePayload(payload spec.CreateAgentRequest) error {
+	return validateAgentPayload(agentPayload{
+		name:           payload.Name,
+		displayName:    payload.DisplayName,
+		provisioning:   payload.Provisioning,
+		agentType:      payload.AgentType,
+		build:          payload.Build,
+		configuration:  payload.Configurations,
+		inputInterface: payload.InputInterface,
+	})
+}
+
+func validateAgentPayload(payload agentPayload) error {
+	// Validate agent name
+	if err := ValidateResourceName(payload.name, "agent"); err != nil {
+		return err
+	}
+	if err := ValidateResourceDisplayName(payload.displayName, "agent"); err != nil {
+		return err
+	}
+	// Validate agent provisioning
+	if err := validateAgentProvisioning(payload.provisioning); err != nil {
+		return err
+	}
+	// Validate agent type and subtype
+	if err := validateAgentType(payload.agentType); err != nil {
+		return err
+	}
+	// Additional validations for internal agents
+	if payload.provisioning.Type == string(InternalAgent) {
+		if err := validateInternalAgentPayload(payload); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateBuildConfiguration validates the build configuration (buildpack or docker)
+func validateBuildConfiguration(build *spec.Build) error {
+	if build == nil {
+		return NewValidationError(
+			"Build configuration is required for internal agents",
+			"build is required for internal agents",
+		)
+	}
+
+	// Validate based on build type
+	if build.BuildpackBuild != nil {
+		// Validate buildpack language configuration
+		buildpackConfig := build.BuildpackBuild.Buildpack
+		if err := validateLanguage(buildpackConfig.Language, buildpackConfig.LanguageVersion); err != nil {
+			if ve := IsValidationError(err); ve != nil {
+				return ve
+			}
+			return NewValidationError(
+				"Invalid language configuration",
+				fmt.Sprintf("invalid language: %s", err.Error()),
+			)
+		}
+
+		// runCommand is required for all languages except Ballerina
+		if buildpackConfig.Language != string(LanguageBallerina) {
+			if buildpackConfig.RunCommand == nil || *buildpackConfig.RunCommand == "" {
+				return NewValidationErrorf(
+					"Run command is required for the selected language",
+					"runCommand is required for %s buildpack", buildpackConfig.Language,
+				)
+			}
+		}
+	} else if build.DockerBuild != nil {
+		// Validate docker configuration
+		dockerConfig := build.DockerBuild.Docker
+		if dockerConfig.DockerfilePath == "" || !strings.HasPrefix(dockerConfig.DockerfilePath, "/") {
+			return NewValidationError(
+				"Please provide a valid Dockerfile path starting with /",
+				"dockerfilePath is required and must start with /",
+			)
+		}
+	} else {
+		return NewValidationError(
+			"Please specify either a buildpack or Docker configuration",
+			"build must specify either buildpack or docker configuration",
+		)
+	}
+
+	return nil
+}
+
+// validateInternalAgentPayload performs validations specific to internal agents.
+func validateInternalAgentPayload(payload agentPayload) error {
+	// Validate Agent Type
+	if err := validateAgentSubType(payload.agentType); err != nil {
+		// If already a ValidationError, return as-is to preserve user-friendly message
+		if IsValidationError(err) != nil {
+			return err
+		}
+		return NewValidationError(
+			"Invalid agent subtype configuration",
+			fmt.Sprintf("invalid agent subtype: %s", err.Error()),
+		)
+	}
+	// Validate API input interface for API agents
+	if payload.agentType.Type == string(AgentTypeAPI) {
+		if err := validateInputInterface(payload.agentType, payload.inputInterface); err != nil {
+			// If already a ValidationError, return as-is to preserve user-friendly message
+			if IsValidationError(err) != nil {
+				return err
+			}
+			return NewValidationError(
+				"Invalid input interface configuration",
+				fmt.Sprintf("invalid inputInterface: %s", err.Error()),
+			)
+		}
+	}
+
+	// Validate build configuration
+	if err := validateBuildConfiguration(payload.build); err != nil {
+		// If already a ValidationError, return as-is to preserve user-friendly message
+		if IsValidationError(err) != nil {
+			return err
+		}
+		return NewValidationError(
+			"Invalid build configuration",
+			fmt.Sprintf("invalid build configuration: %s", err.Error()),
+		)
+	}
+
+	// Validate environment variables if present
+	if payload.configuration != nil && len(payload.configuration.Env) > 0 {
+		if err := validateEnvironmentVariables(payload.configuration.Env); err != nil {
+			// If already a ValidationError, return as-is to preserve user-friendly message
+			if IsValidationError(err) != nil {
+				return err
+			}
+			return NewValidationError(
+				"Invalid environment variable configuration",
+				fmt.Sprintf("invalid environment variables: %s", err.Error()),
+			)
+		}
+	}
+
+	return nil
+}
+
+func validateAgentType(agentType spec.AgentType) error {
+	if agentType.Type != string(AgentTypeAPI) && agentType.Type != string(AgentTypeExternalAPI) {
 		return fmt.Errorf("unsupported agent type: %s", agentType.Type)
 	}
+	return nil
+}
+
+func validateAgentSubType(agentType spec.AgentType) error {
+	if agentType.SubType == nil {
+		return NewValidationError(
+			"Please select an agent subtype",
+			"agent subtype is required",
+		)
+	}
+	if agentType.Type != string(AgentTypeAPI) {
+		return NewValidationErrorf(
+			"The selected agent type is not supported",
+			"unsupported agent type: %s", agentType.Type,
+		)
+	}
 	// Validate subtype for API agent type
-	if agentType.SubType != string(AgentSubTypeChatAPI) && agentType.SubType != string(AgentSubTypeCustomAPI) {
-		return fmt.Errorf("unsupported agent subtype for type %s: %s", agentType.Type, agentType.SubType)
+	subType := StrPointerAsStr(agentType.SubType, "")
+	if subType != string(AgentSubTypeChatAPI) && subType != string(AgentSubTypeCustomAPI) {
+		return NewValidationErrorf(
+			"The selected agent subtype is not supported for this agent type",
+			"unsupported agent subtype for type %s: %s", agentType.Type, subType,
+		)
 	}
 
 	return nil
@@ -94,12 +382,22 @@ func validateAgentType(agentType *spec.AgentType) error {
 
 func validateAgentProvisioning(provisioning spec.Provisioning) error {
 	if provisioning.Type != string(InternalAgent) && provisioning.Type != string(ExternalAgent) {
-		return fmt.Errorf("provisioning type must be either 'internal' or 'external'")
+		return NewValidationError(
+			"Provisioning type must be either 'internal' or 'external'",
+			"provisioning type must be either 'internal' or 'external'",
+		)
 	}
 	if provisioning.Type == string(InternalAgent) {
 		// Validate repository details for internal agents
 		if err := validateRepoDetails(provisioning.Repository); err != nil {
-			return fmt.Errorf("invalid repository details: %w", err)
+			// If already a ValidationError, return as-is to preserve user-friendly message
+			if IsValidationError(err) != nil {
+				return err
+			}
+			return NewValidationError(
+				"Invalid repository configuration",
+				fmt.Sprintf("invalid repository details: %s", err.Error()),
+			)
 		}
 	}
 	return nil
@@ -107,78 +405,146 @@ func validateAgentProvisioning(provisioning spec.Provisioning) error {
 
 func ValidateResourceDisplayName(displayName string, resourceType string) error {
 	if displayName == "" {
-		return fmt.Errorf("%s name cannot be empty", resourceType)
+		return fmt.Errorf("%s display name cannot be empty", capitalize(resourceType))
 	}
 	return nil
 }
 
 // validates that a resource name follows RFC 1035 DNS label standards
 func ValidateResourceName(name string, resourceType string) error {
+	rt := capitalize(resourceType)
 	if name == "" {
-		return fmt.Errorf("%s name cannot be empty", resourceType)
+		return fmt.Errorf("%s name cannot be empty", rt)
 	}
 
 	// Check length
 	if len(name) > MaxResourceNameLength {
-		return fmt.Errorf("%s name must be at most %d characters, got %d", resourceType, MaxResourceNameLength, len(name))
+		return fmt.Errorf("%s name must be at most %d characters, got %d", rt, MaxResourceNameLength, len(name))
 	}
 
 	// Check if name contains only lowercase alphanumeric characters or '-'
 	validChars := regexp.MustCompile(`^[a-z0-9-]+$`)
 	if !validChars.MatchString(name) {
-		return fmt.Errorf("%s name must contain only lowercase alphanumeric characters or '-'", resourceType)
+		return fmt.Errorf("%s name must contain only lowercase alphanumeric characters or '-'", rt)
 	}
 
 	// Check if name starts with an alphabetic character
 	if !regexp.MustCompile(`^[a-z]`).MatchString(name) {
-		return fmt.Errorf("%s name must start with an alphabetic character", resourceType)
+		return fmt.Errorf("%s name must start with an alphabetic character", rt)
 	}
 
 	// Check if name ends with an alphanumeric character
 	if !regexp.MustCompile(`[a-z0-9]$`).MatchString(name) {
-		return fmt.Errorf("%s name must end with an alphanumeric character", resourceType)
+		return fmt.Errorf("%s name must end with an alphanumeric character", rt)
 	}
+	return nil
+}
+
+// ValidateCreateGitSecretRequest validates the CreateGitSecretRequest body
+func ValidateCreateGitSecretRequest(req *spec.CreateGitSecretRequest) error {
+	// Validate name using existing resource name validation
+	if err := ValidateResourceName(req.Name, "git secret"); err != nil {
+		return err
+	}
+
+	// Validate type
+	if req.Type != GitSecretTypeBasicAuth {
+		return fmt.Errorf("git secret type must be '%s'", GitSecretTypeBasicAuth)
+	}
+
+	// Validate credentials - username and password are required for basic-auth
+	if req.Credentials.Username == "" {
+		return fmt.Errorf("username is required for basic-auth type")
+	}
+
+	if req.Credentials.Password == "" {
+		return fmt.Errorf("password is required for basic-auth type")
+	}
+
 	return nil
 }
 
 func validateRepoDetails(repo *spec.RepositoryConfig) error {
 	if repo == nil {
-		return fmt.Errorf("repository details are required for internal agents")
+		return NewValidationError(
+			"Repository details are required for internal agents",
+			"repository details are required for internal agents",
+		)
 	}
 	if repo.Url == "" {
-		return fmt.Errorf("repository URL cannot be empty")
+		return NewValidationError(
+			"Please provide a repository URL",
+			"repository URL cannot be empty",
+		)
 	}
 	if !strings.HasPrefix(repo.Url, "https://github.com/") {
-		return fmt.Errorf("only GitHub URLs are supported (format: https://github.com/owner/repo)")
+		return NewValidationError(
+			"Only GitHub repositories are supported. Please use a URL in format: https://github.com/owner/repo",
+			"only GitHub URLs are supported (format: https://github.com/owner/repo)",
+		)
 	}
 	// Validate repository path format (owner/repo)
-	parts := strings.TrimPrefix(repo.Url, "https://github.com/")
-	if !strings.Contains(parts, "/") || strings.Count(parts, "/") > 1 {
-		return fmt.Errorf("invalid GitHub repository format (expected: https://github.com/owner/repo)")
+	owner, repoName := ParseGitHubURL(repo.Url)
+	if owner == "" || repoName == "" {
+		return NewValidationError(
+			"Invalid repository URL format. Please use: https://github.com/owner/repo",
+			"invalid GitHub repository format (expected: https://github.com/owner/repo)",
+		)
 	}
 	if repo.Branch == "" {
-		return fmt.Errorf("repository branch cannot be empty")
+		return NewValidationError(
+			"Please specify a branch for the repository",
+			"repository branch cannot be empty",
+		)
+	}
+	if repo.AppPath == "" || !strings.HasPrefix(repo.AppPath, "/") {
+		return NewValidationError(
+			"Please provide a valid application path starting with /",
+			"repository appPath is required and must start with /",
+		)
+	}
+	// If secretRef field is present (private repo), it must not be empty
+	if repo.SecretRef.Get() != nil && *repo.SecretRef.Get() == "" {
+		return NewValidationError(
+			"Please select a git secret for private repository authentication",
+			"secretRef cannot be empty when specified (private repository requires a git secret)",
+		)
 	}
 	return nil
 }
 
 // ValidateInputInterface validates the inputInterface field in CreateAgentRequest
-func validateInputInterface(agentType *spec.AgentType, inputInterface *spec.InputInterface) error {
+func validateInputInterface(agentType spec.AgentType, inputInterface *spec.InputInterface) error {
 	if inputInterface == nil {
-		return fmt.Errorf("inputInterface is required for internal agents")
+		return NewValidationError(
+			"Input interface configuration is required for internal agents",
+			"inputInterface is required for internal agents",
+		)
 	}
 	if inputInterface.Type != string(InputInterfaceTypeHTTP) {
-		return fmt.Errorf("unsupported inputInterface type: %s", inputInterface.Type)
+		return NewValidationErrorf(
+			"The selected input interface type is not supported",
+			"unsupported inputInterface type: %s", inputInterface.Type,
+		)
 	}
-	if agentType.SubType == string(AgentSubTypeCustomAPI) {
-		if inputInterface.Schema.Path == "" {
-			return fmt.Errorf("inputInterface.schema.path is required")
+	if StrPointerAsStr(agentType.SubType, "") == string(AgentSubTypeCustomAPI) {
+		if inputInterface.Schema.Path == "" || !strings.HasPrefix(inputInterface.Schema.Path, "/") {
+			return NewValidationError(
+				"Please provide a valid schema path starting with /",
+				"inputInterface.schema.path is required and must start with /",
+			)
 		}
-		if inputInterface.Port <= 0 || inputInterface.Port > 65535 {
-			return fmt.Errorf("inputInterface.port must be a valid port number (1-65535)")
+		if IntPointerAsInt(inputInterface.Port, 0) <= 0 || IntPointerAsInt(inputInterface.Port, 0) > 65535 {
+			return NewValidationError(
+				"Please provide a valid port number between 1 and 65535",
+				"inputInterface.port must be a valid port number (1-65535)",
+			)
 		}
-		if inputInterface.BasePath == "" {
-			return fmt.Errorf("inputInterface.basePath is required")
+		if StrPointerAsStr(inputInterface.BasePath, "") == "" {
+			return NewValidationError(
+				"Base path is required for custom API agents",
+				"inputInterface.basePath is required",
+			)
 		}
 	}
 
@@ -187,10 +553,16 @@ func validateInputInterface(agentType *spec.AgentType, inputInterface *spec.Inpu
 
 func validateLanguage(language string, languageVersion *string) error {
 	if language == "" {
-		return fmt.Errorf("language cannot be empty")
+		return NewValidationError(
+			"Please select a programming language",
+			"language cannot be empty",
+		)
 	}
-	if languageVersion == nil && language != string(LanguageBallerina) {
-		return fmt.Errorf("language version cannot be empty")
+	if (languageVersion == nil || strings.TrimSpace(*languageVersion) == "") && language != string(LanguageBallerina) {
+		return NewValidationError(
+			"Please specify a language version",
+			"language version cannot be empty",
+		)
 	}
 
 	// Find the buildpack for the given language
@@ -214,11 +586,72 @@ func validateLanguage(language string, languageVersion *string) error {
 		}
 
 		// Language found but version not supported
-		return fmt.Errorf("unsupported language version '%s' for language '%s'", *languageVersion, language)
+		return NewValidationErrorf(
+			"The selected language version is not supported",
+			"unsupported language version '%s' for language '%s'", *languageVersion, language,
+		)
 	}
 
 	// Language not found
-	return fmt.Errorf("unsupported language '%s'", language)
+	return NewValidationErrorf(
+		"The selected programming language is not supported",
+		"unsupported language '%s'", language,
+	)
+}
+
+// ValidateDeployAgentRequest validates the deploy agent request payload.
+func ValidateDeployAgentRequest(payload *spec.DeployAgentRequest) error {
+	if payload == nil {
+		return fmt.Errorf("request payload is required")
+	}
+
+	if payload.ImageId == "" {
+		return fmt.Errorf("imageId is required")
+	}
+
+	if len(payload.Env) > 0 {
+		if err := validateEnvironmentVariables(payload.Env); err != nil {
+			return fmt.Errorf("invalid environment variables: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// validateEnvironmentVariables validates environment variables if present in the payload
+// Environment variables are optional, but if provided, they must follow naming conventions
+func validateEnvironmentVariables(envVars []spec.EnvironmentVariable) error {
+	if len(envVars) == 0 {
+		// Environment variables are optional
+		return nil
+	}
+
+	// Pattern is K8s Secret key compliant (subset of allowed chars) and POSIX env var compliant.
+	// Must start with letter or underscore, followed by letters, digits, or underscores.
+	validKeyPattern := regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+	seenKeys := make(map[string]bool)
+
+	for i, envVar := range envVars {
+		// Validate key is not empty
+		if envVar.Key == "" {
+			return fmt.Errorf("environment variable at index %d has an empty key", i)
+		}
+
+		// Validate key follows naming conventions
+		if !validKeyPattern.MatchString(envVar.Key) {
+			return fmt.Errorf("environment variable key '%s' is invalid. Must start with a letter or underscore and contain only letters, digits, or underscores", envVar.Key)
+		}
+
+		// Check for duplicate keys
+		if seenKeys[envVar.Key] {
+			return fmt.Errorf("duplicate environment variable key '%s'", envVar.Key)
+		}
+		seenKeys[envVar.Key] = true
+
+		// Value can be any string, including empty string, so no validation needed for value
+	}
+
+	return nil
 }
 
 // isVersionMatching checks if a provided version matches against a supported version pattern
@@ -281,14 +714,68 @@ func WriteSuccessResponse[T any](w http.ResponseWriter, statusCode int, data T) 
 	_ = json.NewEncoder(w).Encode(data) // Ignore encoding errors for response
 }
 
-// WriteErrorResponse writes an error API response
+// WriteErrorResponse writes an error API response with auto-derived error code.
+// For more control, use WriteErrorResponseWithReason.
 func WriteErrorResponse(w http.ResponseWriter, statusCode int, message string) {
+	code := statusCodeToErrorCode(statusCode)
+	WriteErrorResponseWithReason(w, statusCode, message, "", code)
+}
+
+// WriteErrorResponseWithReason writes an error API response with full error details.
+// - message: User-friendly message for display in UI
+// - reason: Technical details for debugging (can be empty)
+// - code: Machine-readable error code for programmatic handling
+func WriteErrorResponseWithReason(w http.ResponseWriter, statusCode int, message, reason, code string) {
+	if code == "" {
+		// default error code based on status code if not provided
+		code = statusCodeToErrorCode(statusCode)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	errPayload := &spec.ErrorResponse{
-		Message: message,
+	errPayload := spec.NewErrorResponse(message, code)
+	if reason != "" {
+		errPayload.SetReason(reason)
 	}
 	_ = json.NewEncoder(w).Encode(errPayload) // Ignore encoding errors for response
+}
+
+// WriteValidationErrorResponse writes a validation error response.
+// If err is a ValidationError, uses its user-friendly Message and technical Reason.
+// Otherwise, uses err.Error() for both message and reason.
+func WriteValidationErrorResponse(w http.ResponseWriter, err error) {
+	if ve := IsValidationError(err); ve != nil {
+		WriteErrorResponseWithReason(w, http.StatusBadRequest, ve.Message, ve.Reason, ErrCodeValidation)
+		return
+	}
+	// Fallback for non-ValidationError
+	WriteErrorResponseWithReason(w, http.StatusBadRequest, err.Error(), err.Error(), ErrCodeValidation)
+}
+
+// statusCodeToErrorCode maps HTTP status codes to default error codes
+func statusCodeToErrorCode(statusCode int) string {
+	switch statusCode {
+	case http.StatusBadRequest:
+		return ErrCodeBadRequest
+	case http.StatusUnauthorized:
+		return ErrCodeUnauthorized
+	case http.StatusForbidden:
+		return ErrCodeForbidden
+	case http.StatusNotFound:
+		return ErrCodeNotFound
+	case http.StatusConflict:
+		return ErrCodeConflict
+	case http.StatusInternalServerError:
+		return ErrCodeInternalError
+	case http.StatusServiceUnavailable:
+		return ErrCodeServiceUnavailable
+	default:
+		// Classify unmapped status codes by range
+		if statusCode >= 400 && statusCode < 500 {
+			return ErrCodeBadRequest
+		}
+		return ErrCodeInternalError
+	}
 }
 
 // generateRandomSuffix creates a random suffix of specified length using custom alphabet
@@ -362,16 +849,360 @@ func GenerateUniqueNameWithSuffix(baseName string, checker NameChecker) (string,
 	return "", fmt.Errorf("failed to generate unique name after %d attempts", MaxNameGenerationAttempts)
 }
 
-// ReadChatAPISchema reads the OpenAPI schema for chat API from the docs directory
-func ReadChatAPISchema() (string, error) {
-	// Get the schema file path relative to the project root
-	schemaPath := "clients/openchoreosvc/default-openapi-schema.yaml"
-
-	// Read the file content
-	content, err := os.ReadFile(schemaPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to read chat API schema: %w", err)
+func ValidateMetricsFilterRequest(payload spec.MetricsFilterRequest) error {
+	// Validate required fields
+	if payload.EnvironmentName == "" {
+		return fmt.Errorf("environment is required")
 	}
 
-	return string(content), nil
+	validateTimesErr := validateTimes(payload.StartTime, payload.EndTime)
+	if validateTimesErr != nil {
+		return validateTimesErr
+	}
+
+	return nil
+}
+
+func ValidateLogFilterRequest(payload spec.LogFilterRequest) error {
+	// Validate required fields
+	if payload.EnvironmentName == "" {
+		return fmt.Errorf("environment is required")
+	}
+
+	validateTimesErr := validateTimes(payload.StartTime, payload.EndTime)
+	if validateTimesErr != nil {
+		return validateTimesErr
+	}
+
+	// Validate optional limit if provided
+	if payload.Limit != nil {
+		if *payload.Limit < MinLogLimit || *payload.Limit > MaxLogLimit {
+			return fmt.Errorf("limit must be between %d and %d", MinLogLimit, MaxLogLimit)
+		}
+	}
+
+	// Validate optional sortOrder if provided
+	if payload.SortOrder != nil {
+		sortOrder := *payload.SortOrder
+		if sortOrder != SortOrderAsc && sortOrder != SortOrderDesc {
+			return fmt.Errorf("sortOrder must be '%s' or '%s'", SortOrderAsc, SortOrderDesc)
+		}
+	}
+
+	// Validate optional logLevels if provided
+	if len(payload.LogLevels) > 0 {
+		for _, level := range payload.LogLevels {
+			if !isValidLogLevel(level) {
+				return fmt.Errorf("invalid log level '%s': must be one of INFO, DEBUG, WARN, ERROR", level)
+			}
+		}
+	}
+
+	return nil
+}
+
+func validateTimes(startTime string, endTime string) error {
+	if startTime == "" {
+		return fmt.Errorf("required field startTime not found")
+	}
+
+	if endTime == "" {
+		return fmt.Errorf("required field endTime not found")
+	}
+
+	// Validate time format
+	if _, err := time.Parse(time.RFC3339, startTime); err != nil {
+		return fmt.Errorf("startTime must be in RFC3339 format (e.g., 2024-01-01T00:00:00Z): %w", err)
+	}
+
+	if _, err := time.Parse(time.RFC3339, endTime); err != nil {
+		return fmt.Errorf("endTime must be in RFC3339 format (e.g., 2024-01-01T00:00:00Z): %w", err)
+	}
+
+	// Validate that end time is after start time
+	parsedStartTime, _ := time.Parse(time.RFC3339, startTime)
+	parsedEndTime, _ := time.Parse(time.RFC3339, endTime)
+
+	// Validate that start time is not in the future
+	if parsedStartTime.After(time.Now()) {
+		return fmt.Errorf("startTime cannot be in the future")
+	}
+
+	if parsedEndTime.Before(parsedStartTime) {
+		return fmt.Errorf("endTime (%s) must be after startTime (%s)", parsedEndTime, parsedStartTime)
+	}
+
+	// Validate time range does not exceed maximum allowed duration
+	maxDuration := MaxLogTimeRangeDays * 24 * time.Hour
+	if parsedEndTime.Sub(parsedStartTime) > maxDuration {
+		return fmt.Errorf("time range cannot exceed %d days", MaxLogTimeRangeDays)
+	}
+
+	return nil
+}
+
+// isValidLogLevel checks if the given log level is valid
+func isValidLogLevel(level string) bool {
+	return level == LogLevelInfo || level == LogLevelDebug || level == LogLevelWarn || level == LogLevelError
+}
+
+// isValidGitHubIdentifier validates that a string contains only characters allowed in GitHub usernames/repos
+// GitHub allows alphanumeric characters, hyphens, underscores, and periods
+// This prevents path traversal attacks and URL manipulation
+func isValidGitHubIdentifier(value string) bool {
+	if value == "" {
+		return false
+	}
+	// GitHub identifiers: alphanumeric, hyphens, underscores, and periods only
+	// Must not contain: /, .., or other special characters that could be used for path traversal
+	validPattern := regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+	if !validPattern.MatchString(value) {
+		return false
+	}
+	// Reject path traversal patterns
+	if strings.Contains(value, "..") {
+		return false
+	}
+	return true
+}
+
+// isValidGitHubBranch validates branch names
+func isValidGitHubBranch(branch string) bool {
+	if branch == "" {
+		return false
+	}
+
+	// Reject path traversal
+	if strings.Contains(branch, "..") {
+		return false
+	}
+
+	// Reject control characters and null bytes (prevents injection attacks)
+	controlChars := regexp.MustCompile(`[\x00-\x1f\x7f]`)
+	if controlChars.MatchString(branch) {
+		return false
+	}
+
+	// Reject Git special characters and whitespace
+	// Still allows @, +, and other characters that are valid in branch names
+	gitSpecialChars := regexp.MustCompile(`[\s~^:?*\[\\]`)
+	return !gitSpecialChars.MatchString(branch)
+}
+
+// ValidateListBranchesRequest validates the ListBranchesRequest payload
+func ValidateListBranchesRequest(payload *spec.ListBranchesRequest) error {
+	// Normalize and validate owner
+	payload.Owner = strings.TrimSpace(payload.Owner)
+	if payload.Owner == "" {
+		return fmt.Errorf("owner cannot be empty")
+	}
+
+	// Validate owner contains only safe characters
+	if !isValidGitHubIdentifier(payload.Owner) {
+		return fmt.Errorf("owner contains invalid characters or path traversal patterns")
+	}
+
+	// Normalize and validate repository
+	payload.Repository = strings.TrimSpace(payload.Repository)
+	if payload.Repository == "" {
+		return fmt.Errorf("repository cannot be empty")
+	}
+
+	// Validate repository contains only safe characters
+	if !isValidGitHubIdentifier(payload.Repository) {
+		return fmt.Errorf("repository contains invalid characters or path traversal patterns")
+	}
+
+	// Validate that both secretRef and orgName are provided together
+	if payload.HasSecretRef() != payload.HasOrgName() {
+		return fmt.Errorf("both secretRef and orgName must be provided together")
+	}
+
+	if payload.HasSecretRef() && (payload.GetSecretRef() == "" || payload.GetOrgName() == "") {
+		return fmt.Errorf("secretRef and orgName cannot be empty")
+	}
+	return nil
+}
+
+// ValidateListCommitsRequest validates the ListCommitsRequest payload
+func ValidateListCommitsRequest(payload *spec.ListCommitsRequest) error {
+	// Normalize and validate owner
+	payload.Owner = strings.TrimSpace(payload.Owner)
+	if payload.Owner == "" {
+		return fmt.Errorf("owner cannot be empty")
+	}
+
+	// Validate owner contains only safe characters
+	if !isValidGitHubIdentifier(payload.Owner) {
+		return fmt.Errorf("owner contains invalid characters or path traversal patterns")
+	}
+
+	// Normalize and validate repo
+	payload.Repo = strings.TrimSpace(payload.Repo)
+	if payload.Repo == "" {
+		return fmt.Errorf("repo cannot be empty")
+	}
+
+	// Validate repo contains only safe characters
+	if !isValidGitHubIdentifier(payload.Repo) {
+		return fmt.Errorf("repo contains invalid characters or path traversal patterns")
+	}
+
+	// Normalize and validate optional branch field if provided
+	if payload.Branch != nil {
+		branchVal := strings.TrimSpace(*payload.Branch)
+		if branchVal == "" {
+			return fmt.Errorf("branch cannot be empty or whitespace")
+		}
+		if !isValidGitHubBranch(branchVal) {
+			return fmt.Errorf("branch contains invalid characters or path traversal patterns")
+		}
+		*payload.Branch = branchVal // Normalize by writing back trimmed value
+	}
+
+	// Normalize and validate optional path field if provided
+	if payload.Path != nil {
+		pathVal := strings.TrimSpace(*payload.Path)
+		if pathVal == "" {
+			return fmt.Errorf("path cannot be empty or whitespace")
+		}
+		// Path can contain slashes, but reject path traversal patterns
+		if strings.Contains(pathVal, "..") {
+			return fmt.Errorf("path contains path traversal patterns")
+		}
+		*payload.Path = pathVal // Normalize by writing back trimmed value
+	}
+
+	// Normalize and validate optional author field if provided
+	if payload.Author != nil {
+		authorVal := strings.TrimSpace(*payload.Author)
+		if authorVal == "" {
+			return fmt.Errorf("author cannot be empty or whitespace")
+		}
+		// Author can be a username or email, so allow @ and . characters
+		// But still reject path traversal patterns
+		if strings.Contains(authorVal, "..") || strings.Contains(authorVal, "/") {
+			return fmt.Errorf("author contains invalid characters or path traversal patterns")
+		}
+		*payload.Author = authorVal // Normalize by writing back trimmed value
+	}
+
+	// Validate time fields if both are provided
+	if payload.Since != nil && payload.Until != nil {
+		if payload.Until.Before(*payload.Since) {
+			return fmt.Errorf("until time must be after since time")
+		}
+	}
+
+	// Validate since time is not in the future
+	if payload.Since != nil && payload.Since.After(time.Now()) {
+		return fmt.Errorf("since time cannot be in the future")
+	}
+
+	// Validate until time is not in the future
+	if payload.Until != nil && payload.Until.After(time.Now()) {
+		return fmt.Errorf("until time cannot be in the future")
+	}
+
+	// Validate that both secretRef and orgName are provided together
+	if payload.HasSecretRef() != payload.HasOrgName() {
+		return fmt.Errorf("both secretRef and orgName must be provided")
+	}
+
+	if payload.HasSecretRef() && (payload.GetSecretRef() == "" || payload.GetOrgName() == "") {
+		return fmt.Errorf("secretRef and orgName cannot be empty")
+	}
+	return nil
+}
+
+// ParseGitHubURL extracts the owner and repository name from a GitHub URL.
+// Supports formats:
+// - https://github.com/owner/repo
+// - https://github.com/owner/repo.git
+// - https://github.com/owner/my.repo.git (dots allowed in repo names)
+// - git@github.com:owner/repo.git
+// Returns empty strings if the URL cannot be parsed.
+func ParseGitHubURL(url string) (owner, repo string) {
+	if url == "" {
+		return "", ""
+	}
+
+	// Handle HTTPS URLs: https://github.com/owner/repo or https://github.com/owner/repo.git
+	// Allow dots in repo name, strip optional .git suffix and trailing slash
+	httpsPattern := regexp.MustCompile(`^https?://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$`)
+	if matches := httpsPattern.FindStringSubmatch(url); len(matches) == 3 {
+		return matches[1], matches[2]
+	}
+
+	// Handle SSH URLs: git@github.com:owner/repo.git
+	// Allow dots in repo name, strip optional .git suffix
+	sshPattern := regexp.MustCompile(`^git@github\.com:([^/]+)/([^/]+?)(?:\.git)?$`)
+	if matches := sshPattern.FindStringSubmatch(url); len(matches) == 3 {
+		return matches[1], matches[2]
+	}
+
+	return "", ""
+}
+
+// ToShortSHA converts a full git commit SHA to short format (first 8 characters).
+// If the commit is already short or invalid, returns it as-is.
+// This matches the behavior of the build workflow templates that use cut -c1-8.
+func ToShortSHA(commit string) string {
+	if commit == "" {
+		return commit
+	}
+
+	// If commit is already 8 characters or less, return as-is
+	if len(commit) <= 8 {
+		return commit
+	}
+
+	// Return first 8 characters
+	return commit[:8]
+}
+
+// BuildSecretRefName constructs the name for SecretReference CR.
+// The name format is: {componentName}-secrets
+func BuildSecretRefName(componentName string) string {
+	return fmt.Sprintf("%s-secrets", componentName)
+}
+
+// SanitizeString converts s to a lowercase DNS-label-safe string.
+// All characters that are not ASCII lowercase letters, digits, or hyphens
+// are replaced with a hyphen. Uppercase letters are lowercased first.
+// Used when generating Kubernetes secret names and environment variable prefixes
+// from user-supplied config/env names.
+func SanitizeString(s string) string {
+	return strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			return r
+		}
+		return '-'
+	}, strings.ToLower(s))
+}
+
+func ValidateCreateCustomEvaluatorPayload(payload spec.CreateCustomEvaluatorRequest) error {
+	if strings.TrimSpace(payload.DisplayName) == "" {
+		return fmt.Errorf("display name is required")
+	}
+	if payload.Type != "code" && payload.Type != "llm_judge" {
+		return fmt.Errorf("type must be 'code' or 'llm_judge'")
+	}
+	if payload.Level != "trace" && payload.Level != "agent" && payload.Level != "llm" {
+		return fmt.Errorf("level must be 'trace', 'agent', or 'llm'")
+	}
+	if strings.TrimSpace(payload.Source) == "" {
+		return fmt.Errorf("source is required")
+	}
+	return nil
+}
+
+func ValidateUpdateCustomEvaluatorPayload(payload spec.UpdateCustomEvaluatorRequest) error {
+	if payload.DisplayName != nil && strings.TrimSpace(*payload.DisplayName) == "" {
+		return fmt.Errorf("display name cannot be empty")
+	}
+	if payload.Source != nil && strings.TrimSpace(*payload.Source) == "" {
+		return fmt.Errorf("source cannot be empty")
+	}
+	return nil
 }

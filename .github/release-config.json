@@ -17,12 +17,27 @@
     },
     {
       "name": "amp-quick-start",
-      "dir": "quick-start"
+      "dir": "deployments/quick-start"
+    },
+    {
+      "name": "amp-evaluation-monitor",
+      "dir": "evaluation-job",
+      "context": "."
     }
   ],
+
+  "python-instrumentation-provider": [
+    {
+      "versions": ["3.10", "3.11", "3.12", "3.13"]
+    }
+  ],
+
   "charts": [
-    "wso2-ai-agent-management-platform",
-    "wso2-amp-build-extension",
-    "wso2-amp-observability-extension"
+    "wso2-agent-manager",
+    "wso2-amp-observability-extension",
+    "wso2-amp-platform-resources-extension",
+    "wso2-amp-thunder-extension",
+    "wso2-amp-evaluation-extension",
+    "wso2-amp-ai-gateway-extension"
   ]
 }

@@ -1,4 +1,4 @@
-// Copyright (c) 2025, WSO2 LLC. (https://www.wso2.com).
+// Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com).
 //
 // WSO2 LLC. licenses this file to you under the Apache License,
 // Version 2.0 (the "License"); you may not use this file except
@@ -18,13 +18,13 @@ package config
 
 // Config holds all configuration for the application
 type Config struct {
+	PackageVersion      string
 	ServerHost          string
 	ServerPort          int
 	AuthHeader          string
 	AutoMaxProcsEnabled bool
 	LogLevel            string
 	POSTGRESQL          POSTGRESQL
-	KubeConfig          string
 	// HTTP Server timeout configurations
 	ReadTimeoutSeconds  int
 	WriteTimeoutSeconds int
@@ -34,8 +34,6 @@ type Config struct {
 	DbOperationTimeoutSeconds int
 	HealthCheckTimeoutSeconds int
 
-	APIKeyHeader string
-	APIKeyValue  string
 	// CORSAllowedOrigin is the single allowed origin for CORS; use "*" to allow all
 	CORSAllowedOrigin string
 
@@ -45,22 +43,124 @@ type Config struct {
 	// Observer service configuration (for build logs, etc.)
 	Observer ObserverConfig
 
-	// Trace Observer service configuration (for distributed tracing)
-	TraceObserver TraceObserverConfig
+	// Instrumentation url for MCP
+	InstrumentationURL string
 
 	IsLocalDevEnv bool
 
 	// Default Chat API configuration
 	DefaultChatAPI     DefaultChatAPIConfig
 	DefaultGatewayPort int
+
+	// JWT Signing configuration for agent API tokens
+	JWTSigning JWTSigningConfig
+
+	KeyManagerConfigurations KeyManagerConfigurations
+	IsOnPremDeployment       bool
+	ServerPublicURL          string
+
+	// OAuthAuthorizationServers is the list of OAuth 2.0 authorization server URLs
+	// advertised in the RFC 9728 protected resource metadata document. Each entry
+	// MUST be an absolute http/https URL (validated at config load). Required for
+	// the /.well-known/oauth-protected-resource endpoint to serve.
+	OAuthAuthorizationServers []string
+
+	// IDP OAuth2 client credentials for service-to-service auth
+	IDP IDPConfig
+
+	// GitHub configuration for repository API access
+	GitHub GitHubConfig
+
+	// OpenChoreo API configuration
+	OpenChoreo OpenChoreoConfig
+
+	// Internal Server configuration (for WebSocket and gateway internal APIs)
+	InternalServer InternalServerConfig
+
+	// WebSocket configuration
+	WebSocket WebSocketConfig
+
+	// EncryptionKey is a hex-encoded 32-byte key used for AES-256-GCM encryption
+	// of secrets at rest (e.g., LLM provider API keys in monitor configs).
+	EncryptionKey string `json:"-"`
+
+	// Secret Manager configuration
+	SecretManager SecretManagerConfig
+
+	// OpenBao KV store configuration (data plane - for deployment secrets)
+	OpenBao OpenBaoConfig
+
+	// WorkflowPlaneOpenBao KV store configuration (workflow plane - for git secrets)
+	WorkflowPlaneOpenBao OpenBaoConfig
+
+	// Thunder admin API configuration for provisioning OAuth apps
+	Thunder ThunderConfig
+
+	// TLS Configurations
+	TLSConfig TLSConfig
+}
+type TLSConfig struct {
+	// EnableTLS indicates whether TLS is enabled for the server
+	EnableTLS bool
+}
+
+// SecretManagerConfig holds secret manager client configuration
+type SecretManagerConfig struct {
+	// Provider is the secret store provider name (e.g., "openbao", "vault", "secret-manager-api")
+	Provider string
+	// RefreshInterval is how often SecretReference CRs should refresh from KV (default: "1h")
+	RefreshInterval string
+	// BaseURL is the Secret Manager API base URL (only used when Provider is "secret-manager-api")
+	BaseURL string
+	// Timeout is the HTTP client timeout in seconds for Secret Manager API (default: 30)
+	Timeout int
+}
+
+// OpenBaoConfig holds OpenBao KV store configuration.
+// Only KV v2 secrets engine is supported.
+type OpenBaoConfig struct {
+	// URL is the OpenBao server URL (e.g., http://openbao.openbao.svc:8200)
+	URL string
+	// Token is the authentication token
+	Token string `json:"-"`
+	// Path is the KV secrets engine mount path (default: "secret")
+	Path string
+}
+
+// OpenChoreoConfig holds OpenChoreo API configuration
+type OpenChoreoConfig struct {
+	// BaseURL is the OpenChoreo API base URL
+	BaseURL string
+}
+
+// GitHubConfig holds GitHub API configuration
+type GitHubConfig struct {
+	// Token is a GitHub Personal Access Token for API authentication (optional but recommended)
+	// Without a token, rate limit is 60 requests/hour; with token, 5000 requests/hour
+	Token string `json:"-"`
+}
+
+type IDPConfig struct {
+	TokenURL     string
+	ClientID     string
+	ClientSecret string `json:"-"`
+}
+
+type KeyManagerConfigurations struct {
+	Issuer   []string
+	Audience []string
+	JWKSUrl  string
+}
+
+type AgentWorkload struct {
+	CORS CORSConfig
 }
 
 // OTELConfig holds all OpenTelemetry related configuration
 type OTELConfig struct {
 	// Instrumentation configuration
-	OTELInstrumentationImage
-	SDKVolumeName        string
-	SDKMountPath         string
+	SDKVolumeName string
+	SDKMountPath  string
 
 	// Tracing configuration
 	IsTraceContentEnabled bool
@@ -69,22 +169,14 @@ type OTELConfig struct {
 	ExporterEndpoint string
 }
 
-type OTELInstrumentationImage struct {
-	Python310 string
-     Python311 string
-	 Python312 string
-	 Python313 string
+type CORSConfig struct {
+	AllowOrigin  string
+	AllowMethods string
+	AllowHeaders string
 }
 
 type ObserverConfig struct {
 	// Observer service URL
-	URL      string
-	Username string
-	Password string `json:"-"`
-}
-
-type TraceObserverConfig struct {
-	// Trace Observer service URL
 	URL string
 }
 
@@ -112,4 +204,71 @@ type DbConfigs struct {
 type DefaultChatAPIConfig struct {
 	DefaultHTTPPort int32
 	DefaultBasePath string
+}
+
+// JWTSigningConfig holds configuration for JWT token generation
+type JWTSigningConfig struct {
+	// PrivateKeyPath is the path to the RSA private key file (PEM format)
+	PrivateKeyPath string
+	// PublicKeysConfigPath is the path to the JSON file containing multiple public keys (required)
+	PublicKeysConfigPath string
+	// ActiveKeyID is the key ID (kid) to use for signing tokens
+	ActiveKeyID string
+	// DefaultExpiryDuration is the default token expiry duration (e.g., "8760h" for 1 year)
+	DefaultExpiryDuration string
+	// Issuer is the issuer claim for the JWT
+	Issuer string
+	// DefaultEnvironment is the default environment to use for token claims
+	DefaultEnvironment string
+}
+
+// PublicKeyConfig represents a single public key configuration in the JSON file
+type PublicKeyConfig struct {
+	Kid           string `json:"kid"`
+	Algorithm     string `json:"algorithm"`
+	PublicKeyPath string `json:"publicKeyPath"`
+	Description   string `json:"description,omitempty"`
+	CreatedAt     string `json:"createdAt,omitempty"`
+}
+
+// PublicKeysConfig represents the structure of the public keys JSON configuration file
+type PublicKeysConfig struct {
+	Keys []PublicKeyConfig `json:"keys"`
+}
+
+// APIPlatformConfig holds API Platform client configuration
+type APIPlatformConfig struct {
+	BaseURL string // Base URL for API Platform
+	Enable  bool
+}
+
+// InternalServerConfig holds configuration for the internal server
+// This server hosts WebSocket connections and gateway internal APIs
+type InternalServerConfig struct {
+	Host       string // Server host (default: "")
+	Port       int    // Server port (default: 9243)
+	TLSEnabled bool   // Enable TLS (default: true). When false, serves plain HTTP.
+	CertDir    string // Directory for TLS certificates (default: "./data/certs")
+	// HTTP Server timeout configurations
+	ReadTimeoutSeconds  int
+	WriteTimeoutSeconds int
+	IdleTimeoutSeconds  int
+	MaxHeaderBytes      int
+}
+
+// ThunderConfig holds Thunder admin API configuration for provisioning OAuth apps
+type ThunderConfig struct {
+	// BaseURL is the Thunder API base URL (if empty, provisioner uses static defaults)
+	BaseURL string
+	// ClientID is the OAuth2 client ID of the system app (with Administrator role)
+	ClientID string
+	// ClientSecret is the OAuth2 client secret of the system app
+	ClientSecret string `json:"-"`
+}
+
+// WebSocketConfig holds WebSocket-specific configuration
+type WebSocketConfig struct {
+	MaxConnections    int // Maximum number of concurrent WebSocket connections (default: 1000)
+	ConnectionTimeout int // Connection timeout in seconds (default: 30)
+	RateLimitPerMin   int // Rate limit per gateway per minute (default: 10)
 }

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2025, WSO2 LLC. (https://www.wso2.com).
+ * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com).
  *
  * WSO2 LLC. licenses this file to you under the Apache License,
  * Version 2.0 (the "License"); you may not use this file except
@@ -16,23 +16,58 @@
  * under the License.
  */
 
-import { type AgentPathParams, type RuntimeConfiguration, type EndpointSpec, type ListQuery, type OrgProjPathParams, type PaginationMeta, type RepositoryConfig } from './common';
+import { type AgentPathParams, type Build, type Configurations, type ListQuery, type OrgProjPathParams, type PaginationMeta, type RepositoryConfig } from './common';
+import type { EnvProviderConfiguration, EnvironmentVariableConfig } from './agent-model-configs';
+
+export interface ModelConfigRequest {
+  envMappings: Record<string, { providerName: string; configuration: EnvProviderConfiguration; }>;
+  environmentVariables?: EnvironmentVariableConfig[];
+}
 
 // Requests
-export interface CreateAgentRequest {
+interface AgentRequestBase {
   name: string;
   displayName: string;
   description?: string;
   provisioning: Provisioning;
-  runtimeConfigs?: RuntimeConfiguration;
+  agentType?: AgentType;
+  build?: Build;
+  configurations?: Configurations;
+  inputInterface?: InputInterface;
+  modelConfig?: ModelConfigRequest[];
+}
+
+interface UpdateAgentBasicInfoRequest {
+  displayName: string;
+  description?: string;
+}
+
+interface UpdateAgentBuildParametersRequest {
+  provisioning: Provisioning;
+  agentType?: AgentType;
+  build?: Build;
+  configurations?: Configurations;
   inputInterface?: InputInterface;
 }
+
+export type CreateAgentRequest = AgentRequestBase;
+export type UpdateAgentRequest = UpdateAgentBasicInfoRequest;
+export type { UpdateAgentBasicInfoRequest, UpdateAgentBuildParametersRequest };
 
 export type InputInterfaceType = 'DEFAULT' | 'CUSTOM';
 
 export interface InputInterface {
+  type: string; // Always "HTTP" for now
+  port?: number;
+  schema?: {
+    path: string;
+  };
+  basePath?: string;
+}
+
+export interface AgentType {
   type: string;
-  customOpenAPISpec?: EndpointSpec;
+  subType: string;
 }
 
 export type ProvisioningType = 'internal' | 'external';
@@ -50,6 +85,11 @@ export interface AgentResponse {
   projectName: string;
   status?: string;
   provisioning: Provisioning;
+  agentType?: AgentType;
+  build?: Build;
+  configurations?: Configurations;
+  inputInterface?: InputInterface;
+  uuid?: string;
 }
 
 export interface AgentListResponse extends PaginationMeta {
@@ -61,6 +101,27 @@ export type ListAgentsPathParams = OrgProjPathParams;
 export type CreateAgentPathParams = OrgProjPathParams;
 export type GetAgentPathParams = AgentPathParams;
 export type DeleteAgentPathParams = AgentPathParams;
+export type UpdateAgentPathParams = AgentPathParams;
+export type UpdateAgentBasicInfoPathParams = AgentPathParams;
+export type UpdateAgentBuildParametersPathParams = AgentPathParams;
 export type ListAgentsQuery = ListQuery;
+
+// Agent Token
+export interface TokenRequest {
+  expires_in?: string; // Go duration format (e.g., "720h" for 30 days, "8760h" for 1 year)
+}
+
+export interface TokenResponse {
+  token: string;
+  expires_at: number; // Unix timestamp
+  issued_at: number; // Unix timestamp
+  token_type: string; // "Bearer"
+}
+
+export type GenerateAgentTokenPathParams = AgentPathParams;
+
+export interface GenerateAgentTokenQuery {
+  environment?: string;
+}
 
 

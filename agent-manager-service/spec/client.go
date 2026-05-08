@@ -48,7 +48,33 @@ type APIClient struct {
 
 	// API Services
 
+	CatalogAPI *CatalogAPIService
+
 	DefaultAPI *DefaultAPIService
+
+	EnvironmentsAPI *EnvironmentsAPIService
+
+	EvaluatorsAPI *EvaluatorsAPIService
+
+	GatewayEnvironmentMappingsAPI *GatewayEnvironmentMappingsAPIService
+
+	GatewayTokensAPI *GatewayTokensAPIService
+
+	GatewaysAPI *GatewaysAPIService
+
+	GitSecretsAPI *GitSecretsAPIService
+
+	HealthAPI *HealthAPIService
+
+	LLMAPIKeysAPI *LLMAPIKeysAPIService
+
+	LLMDeploymentsAPI *LLMDeploymentsAPIService
+
+	LLMProviderTemplatesAPI *LLMProviderTemplatesAPIService
+
+	LLMProvidersAPI *LLMProvidersAPIService
+
+	LLMProxiesAPI *LLMProxiesAPIService
 }
 
 type service struct {
@@ -67,7 +93,20 @@ func NewAPIClient(cfg *Configuration) *APIClient {
 	c.common.client = c
 
 	// API Services
+	c.CatalogAPI = (*CatalogAPIService)(&c.common)
 	c.DefaultAPI = (*DefaultAPIService)(&c.common)
+	c.EnvironmentsAPI = (*EnvironmentsAPIService)(&c.common)
+	c.EvaluatorsAPI = (*EvaluatorsAPIService)(&c.common)
+	c.GatewayEnvironmentMappingsAPI = (*GatewayEnvironmentMappingsAPIService)(&c.common)
+	c.GatewayTokensAPI = (*GatewayTokensAPIService)(&c.common)
+	c.GatewaysAPI = (*GatewaysAPIService)(&c.common)
+	c.GitSecretsAPI = (*GitSecretsAPIService)(&c.common)
+	c.HealthAPI = (*HealthAPIService)(&c.common)
+	c.LLMAPIKeysAPI = (*LLMAPIKeysAPIService)(&c.common)
+	c.LLMDeploymentsAPI = (*LLMDeploymentsAPIService)(&c.common)
+	c.LLMProviderTemplatesAPI = (*LLMProviderTemplatesAPIService)(&c.common)
+	c.LLMProvidersAPI = (*LLMProvidersAPIService)(&c.common)
+	c.LLMProxiesAPI = (*LLMProxiesAPIService)(&c.common)
 
 	return c
 }

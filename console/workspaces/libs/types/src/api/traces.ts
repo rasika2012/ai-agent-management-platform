@@ -16,63 +16,213 @@
  * under the License.
  */
 
-export interface Trace {
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+}
+
+export interface TraceStatus {
+  errorCount: number;
+}
+
+export interface TraceScore {
+  score?: number | null;
+  totalCount: number;
+  skippedCount: number;
+}
+
+export interface TraceOverview {
   traceId: string;
   rootSpanId: string;
   rootSpanName: string;
-  startTime: string;
-  endTime: string;
-}
-
-export interface TraceListResponse {
-  traces: Trace[];
-  totalCount: number;
-}
-
-export interface Span {
-  traceId: string;
-  spanId: string;
-  parentSpanId?: string;
-  name: string;
-  service: string;
+  rootSpanKind?: string;
   startTime: string;
   endTime: string;
   durationInNanos: number;
-  kind: string;
-  status: string;
-  attributes: Record<string, unknown>;
+  spanCount: number;
+  tokenUsage?: TokenUsage;
+  status?: TraceStatus;
+  input?: string;
+  output?: string;
+  score?: TraceScore | null;
 }
 
-export interface TraceDetailsResponse {
-  spans: Span[];
+export interface TraceListResponse {
+  traces: TraceOverview[];
+  totalCount: number;
+}
+
+// Keep Trace as an alias for backward compatibility
+export type Trace = TraceOverview;
+
+export interface SpanStatus {
+  error: boolean;
+  errorType?: string;
+}
+
+export interface LLMTokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens?: number;
+  totalTokens: number;
+}
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
+export interface PromptMessage {
+  role: "system" | "user" | "assistant" | "tool" | "unknown";
+  content?: string;
+  toolCalls?: ToolCall[];
+}
+
+export interface ToolDefinition {
+  name: string;
+  description?: string;
+  parameters?: string;
+}
+
+export interface LLMData {
+  tools?: ToolDefinition[];
+  model?: string;
+  vendor?: string;
+  temperature?: number;
+  tokenUsage?: LLMTokenUsage;
+}
+
+export interface ToolData {
+  name?: string;
+}
+
+export interface EmbeddingData {
+  model?: string;
+  vendor?: string;
+  tokenUsage?: LLMTokenUsage;
+}
+
+export interface RetrieverData {
+  vectorDB?: string;
+  topK?: number;
+}
+
+export interface AgentData {
+  name?: string;
+  tools?: string[];
+  model?: string;
+  framework?: string;
+  systemPrompt?: string;
+  tokenUsage?: LLMTokenUsage;
+}
+
+export interface CrewAITaskData {
+  name?: string;
+  description?: string;
+  tools?: ToolDefinition[];
+}
+
+export interface AmpAttributes {
+  kind: string;
+  input?: PromptMessage[] | string[] | string;
+  output?: PromptMessage[] | string;
+  status?: SpanStatus;
+  data?: LLMData | ToolData | EmbeddingData | RetrieverData | AgentData | CrewAITaskData;
+}
+
+export interface Span {
+  traceId?: string;
+  spanId: string;
+  parentSpanId?: string;
+  name: string;
+  service?: string;
+  startTime: string;
+  endTime?: string;
+  durationInNanos: number;
+  kind?: string;
+  status?: string;
+  attributes?: Record<string, unknown>;
+  resource?: Record<string, unknown>;
+  ampAttributes?: AmpAttributes;
+}
+
+/** Lightweight span row from GET /api/v1/traces/{traceId}/spans (no attributes). */
+export interface TraceSpanSummary {
+  spanId: string;
+  spanName: string;
+  parentSpanId?: string;
+  startTime: string;
+  endTime: string;
+  durationNs: number;
+}
+
+export interface TraceSpanSummaryListResponse {
+  spans: TraceSpanSummary[];
   totalCount: number;
 }
 
 export interface GetTracePathParams {
-  orgName: string;
-  projName: string;
-  agentName: string;
-  envId: string;
-  traceId: string;
+  orgName: string | undefined;
+  projName: string | undefined;
+  agentName: string | undefined;
+  traceId: string | undefined;
+  environment?: string;
 }
 
 export type GetTraceListPathParams = { 
-  orgName: string,
-  projName: string,
-  agentName: string,
-  envId: string,
-  startTime: string,
-  endTime: string,
+  orgName: string | undefined,
+  projName: string | undefined,
+  agentName: string | undefined,
+  environment?: string,
+  startTime?: string,
+  endTime?: string,
+  limit?: number,
+  offset?: number,
+  sortOrder?: 'asc' | 'desc',
 };
 
-export enum TraceListTimeRange {
-  TEN_MINUTES = '10m',
-  THIRTY_MINUTES = '30m',
-  ONE_HOUR = '1h',
-  THREE_HOURS = '3h',
-  SIX_HOURS = '6h',
-  TWELVE_HOURS = '12h',
-  ONE_DAY = '1d',
-  THREE_DAYS = '3d',
-  SEVEN_DAYS = '7d',
+export const TraceListTimeRange = {
+  TEN_MINUTES: '10m',
+  THIRTY_MINUTES: '30m',
+  ONE_HOUR: '1h',
+  THREE_HOURS: '3h',
+  SIX_HOURS: '6h',
+  TWELVE_HOURS: '12h',
+  ONE_DAY: '1d',
+  THREE_DAYS: '3d',
+  SEVEN_DAYS: '7d',
+  THIRTY_DAYS: '30d',
+} as const;
+export type TraceListTimeRange = typeof TraceListTimeRange[keyof typeof TraceListTimeRange];
+
+export interface FullTrace {
+  traceId: string;
+  rootSpanName: string;
+  startTime: string;
+  endTime: string;
+  durationInNanos: number;
+  spans: Span[];
+  tokenUsage?: TokenUsage;
+  status?: TraceStatus;
+  input?: string;
+  output?: string;
 }
+
+export interface TraceExportResponse {
+  traces: FullTrace[];
+  totalCount: number;
+}
+
+export type ExportTracesPathParams = {
+  orgName: string | undefined;
+  projName: string | undefined;
+  agentName: string | undefined;
+  environment?: string;
+  startTime?: string;
+  endTime?: string;
+  limit?: number;
+  offset?: number;
+  sortOrder?: 'asc' | 'desc';
+};

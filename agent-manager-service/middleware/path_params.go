@@ -21,8 +21,10 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/utils"
+	"github.com/wso2/agent-manager/agent-manager-service/utils"
 )
+
+const DefaultOrgName = "default"
 
 // WithPathParamValidation wraps a handler and validates required path parameters
 // This runs after route matching, so r.PathValue() works correctly

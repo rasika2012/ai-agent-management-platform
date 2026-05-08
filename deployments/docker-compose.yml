@@ -26,7 +26,8 @@ services:
       dockerfile: Dockerfile.dev
     container_name: agent-manager-service
     ports:
-      - "8080:8080"
+      - "9000:8080"
+      - "9243:9243"
     environment:
       # Database Configuration
       - DB_HOST=postgres
@@ -36,19 +37,55 @@ services:
       - DB_NAME=agentmanager
       # Server Configuration
       - SERVER_PORT=8080
+      - SERVER_PUBLIC_URL=http://localhost:9000
+      - OAUTH_AUTHORIZATION_SERVERS=http://thunder.amp.localhost:8080
       # Kubernetes Configuration
       - KUBECONFIG=/app/.kube/config
-      - API_KEY_VALUE=abc-def-123
       - IS_LOCAL_DEV_ENV=true
+      # JWT Configuration
+      - JWT_SIGNING_PRIVATE_KEY_PATH=/app/keys/private.pem
+      - JWT_SIGNING_PUBLIC_KEYS_CONFIG=/app/keys/public-keys-config.json
+      - JWT_SIGNING_ACTIVE_KEY_ID=key-1
+      - JWT_SIGNING_DEFAULT_EXPIRY=8760h
+      - JWT_SIGNING_ISSUER=agent-manager-service
+      - JWT_SIGNING_DEFAULT_ENVIRONMENT=default
       # Optional: External Service URLs (add when needed)
       # - OPENCHOREO_API_URL=http://host.docker.internal:8000
       # - OPENSEARCH_URL=http://host.docker.internal:9200
       - OBSERVER_URL=http://host.docker.internal:8085
+      - IDP_TOKEN_URL=http://thunder.amp.localhost:8080/oauth2/token
+      - IDP_CLIENT_ID=amp-api-client
+      - IDP_CLIENT_SECRET=amp-api-client-secret
+      # Key Manager / JWT validation configuration
+      # Accepts Thunder-issued tokens (client_credentials for publisher)
+      - KEY_MANAGER_ISSUER=Agent Management Platform Local,http://thunder.amp.localhost:8080
+      - KEY_MANAGER_AUDIENCE=localhost,amp-publisher-*,amp-api-client,amp-console-client,amctl,am-mcp,http://localhost:9000/
+      - AMP_VERSION=v0.8.0
+      - OPEN_CHOREO_BASE_URL=http://api.openchoreo.localhost:8195
+      # OpenBao/Vault Secret Management Configuration
+      # NOTE: Run ./deployments/scripts/port-forward.sh to forward OpenBao from k3d cluster
+      # Uses the default OpenBao that comes with OpenChoreo for both user and system secrets
+      - SECRET_MANAGER_PROVIDER=openbao
+      - OPENBAO_URL=http://host.docker.internal:8200
+      - OPENBAO_TOKEN=root
+      - OPENBAO_PATH=secret
+      - OPENBAO_VERSION=v2
+      # Workflow Plane OpenBao (for git secrets and publisher credentials)
+      - WORKFLOW_PLANE_OPENBAO_URL=http://host.docker.internal:8200
+      - WORKFLOW_PLANE_OPENBAO_TOKEN=root
+      # Thunder API (for per-org publisher credential provisioning)
+      # Uses the system app's client_credentials with scope=system to get admin tokens.
+      # Leave THUNDER_BASE_URL empty to fall back to static amp-publisher-client credentials.
+      - THUNDER_BASE_URL=http://thunder.amp.localhost:8080
+      - THUNDER_CLIENT_ID=amp-system-client
+      - THUNDER_CLIENT_SECRET=amp-system-client-secret
+      # Encryption Configuration (AES-256-GCM, hex-encoded 32-byte key)
+      - ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     volumes:
       # Mount source code for hot-reloading
       - ../agent-manager-service:/app
-      # Mount Docker-specific kubeconfig
-      - ~/.kube/config-docker:/app/.kube/config:ro
+      # Use container-specific keys (not host) so paths are correct
+      - agent_manager_keys:/app/keys
       # Exclude vendor and tmp directories from mount
       - /app/vendor
       - /app/tmp
@@ -58,15 +95,27 @@ services:
         condition: service_healthy
     networks:
       - agent-manager
-      - k3d-openchoreo-local-v0.7 # Connect to k3d cluster network for hostname resolution
+      - k3d-openchoreo-local-setup # Connect to k3d cluster network for hostname resolution
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      # OpenChoreo API uses Host-based routing via Kgateway on port 8080.
+      # The gateway routes requests based on the Host header, so we need the
+      # hostname to resolve to the host machine for proper routing.
+      - "api.openchoreo.localhost:host-gateway"
+      # Thunder IDP for OAuth2 token exchange (must match OpenChoreo's security.oidc config)
+      - "thunder.amp.localhost:host-gateway"
+      # AI Gateway runtime for agent endpoint access (port 8084 mapped via k3d)
+      - "ai-gateway.amp.localhost:host-gateway"
 
   # Agent Manager Console (React Frontend)
   agent-manager-console:
     build:
       context: ../console
       dockerfile: Dockerfile.dev
+      args:
+        # Pass the host's absolute path so the container WORKDIR matches,
+        # ensuring rush/pnpm symlinks resolve to the same paths on both sides.
+        WORKDIR_PATH: ${CONSOLE_HOST_PATH}
     container_name: agent-manager-console
     ports:
       - "3000:3000"
@@ -75,45 +124,32 @@ services:
       - AUTH_BASE_URL=null
       - SIGN_IN_REDIRECT_URL=null
       - SIGN_OUT_REDIRECT_URL=null
-      - API_BASE_URL=http://localhost:8080
+      - API_BASE_URL=http://localhost:9000
       - DISABLE_AUTH=true
       - OBS_API_BASE_URL=http://localhost:9098
+      - GUARDRAILS_CATALOG_URL=https://db720294-98fd-40f4-85a1-cc6a3b65bc9a-prod.e1-us-east-azure.choreoapis.dev/api-platform/policy-hub-api/policy-hub-public/v1.0/policies?categories=Guardrails
+      - GUARDRAILS_DEFINITION_BASE_URL=https://db720294-98fd-40f4-85a1-cc6a3b65bc9a-prod.e1-us-east-azure.choreoapis.dev/api-platform/policy-hub-api/policy-hub-public/v1.0/policies
     volumes:
-      # Mount source code for hot-reloading with Vite HMR
-      - ../console:/app
-      # Exclude directories with platform-specific binaries (use container's Linux versions)
-      - console_node_modules:/app/node_modules
-      - console_common_temp:/app/common/temp
+      # Mount source code at the SAME absolute path as on the host so that
+      # rush/pnpm symlinks in common/temp resolve identically in the container.
+      - ${CONSOLE_HOST_PATH}:${CONSOLE_HOST_PATH}
+      # Overlay node_modules and common/temp with named volumes so the container
+      # keeps its own Linux-built binaries separate from the host's macOS ones.
+      - console_node_modules:${CONSOLE_HOST_PATH}/node_modules
+      - console_common_temp:${CONSOLE_HOST_PATH}/common/temp
     networks:
       - agent-manager
     depends_on:
       - agent-manager-service
 
-  #add traces observer service
-  traces-observer-service:
-    build:
-      context: ../traces-observer-service
-      dockerfile: Dockerfile.dev
-    container_name: traces-observer-service
-    ports:
-      - "9098:9098"
-    environment:
-      - TRACES_OBSERVER_PORT=9098
-      - OPENSEARCH_ADDRESS=http://host.docker.internal:9200
-      - OPENSEARCH_USERNAME=admin
-      - OPENSEARCH_PASSWORD=ThisIsTheOpenSearchPassword1
-    networks:
-      - agent-manager
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-
 volumes:
   postgres_data:
   console_node_modules:
   console_common_temp:
+  agent_manager_keys:
 
 networks:
   agent-manager:
     driver: bridge
-  k3d-openchoreo-local-v0.7:
+  k3d-openchoreo-local-setup:
     external: true

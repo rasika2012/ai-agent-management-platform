@@ -16,32 +16,47 @@
  * under the License.
  */
 
-import React from 'react';
-import { Box, Skeleton } from '@wso2/oxygen-ui';
-import { TopCards } from './subComponents/TopCards';
-import { BuildTable } from './subComponents/BuildTable';
-import { FadeIn } from '@agent-management-platform/views';
-import { useParams } from 'react-router-dom';
-import { useGetAgentBuilds } from '@agent-management-platform/api-client';
-
+import React from "react";
+import { Box, Skeleton, DataGrid, Stack } from "@wso2/oxygen-ui";
+import { TopCards } from "./subComponents/TopCards";
+import { BuildTable } from "./subComponents/BuildTable";
+import { FadeIn } from "@agent-management-platform/views";
+import { useParams } from "react-router-dom";
+import { useGetAgentBuilds } from "@agent-management-platform/api-client";
 
 export function AgentBuildSkeleton() {
   return (
-    <Box display="flex" flexDirection="column" gap={1} pt={1}>
-      <Box display="flex" justifyContent="space-between" gap={2}>
+    <Box display="flex" flexDirection="column" gap={4} pt={1}>
+      <Box display="flex" justifyContent="space-between" gap={4}>
         <Skeleton variant="rounded" width="100%" height={120} />
         <Skeleton variant="rounded" width="100%" height={120} />
         <Skeleton variant="rounded" width="100%" height={120} />
       </Box>
-      <Skeleton variant="rounded" width="100%" height={500} />
-      {/* <Skeleton variant="rounded" width="100%" height={500} /> */}
+      <DataGrid.DataGrid
+        rows={[]}
+        columns={[
+          { field: 'buildNumber', headerName: 'Build', flex: 0.5 },
+          { field: 'status', headerName: 'Status', flex: 0.8 },
+          { field: 'branch', headerName: 'Branch', flex: 1 },
+          { field: 'commit', headerName: 'Commit', flex: 1 },
+          { field: 'startedAt', headerName: 'Started', flex: 1 },
+          { field: 'duration', headerName: 'Duration', flex: 0.8 },
+          { field: 'actions', headerName: 'Actions', flex: 0.8 },
+        ]}
+        loading
+        hideFooter
+      />
     </Box>
   );
 }
 
 export const AgentBuild: React.FC = () => {
   const { agentId, projectId, orgId } = useParams();
-  const { isLoading } = useGetAgentBuilds({ orgName: orgId ?? 'default', projName: projectId ?? 'default', agentName: agentId ?? '' });
+  const { isLoading } = useGetAgentBuilds({
+    orgName: orgId,
+    projName: projectId,
+    agentName: agentId,
+  });
 
   if (isLoading) {
     return <AgentBuildSkeleton />;
@@ -49,10 +64,10 @@ export const AgentBuild: React.FC = () => {
 
   return (
     <FadeIn>
-      <Box gap={2} pt={2} pb={2} display="flex" flexDirection="column">
+      <Stack gap={4} flexDirection="column">
         <TopCards />
         <BuildTable />
-      </Box>
+      </Stack>
     </FadeIn>
   );
 };

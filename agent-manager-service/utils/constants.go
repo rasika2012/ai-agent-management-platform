@@ -41,18 +41,58 @@ const (
 
 // Path parameter names used in HTTP routes
 const (
-	PathParamOrgName   = "orgName"
-	PathParamProjName  = "projName"
-	PathParamAgentName = "agentName"
-	PathParamBuildName = "buildName"
-	PathParamTraceId   = "traceId"
+	PathParamOrgName      = "orgName"
+	PathParamProjName     = "projName"
+	PathParamAgentName    = "agentName"
+	PathParamBuildName    = "buildName"
+	PathParamTraceId      = "traceId"
+	PathParamProviderId   = "providerId"
+	PathParamTemplateId   = "templateId"
+	PathParamProxyId      = "proxyId"
+	PathParamConfigId     = "configId"
+	PathParamGatewayId    = "gatewayId"
+	PathParamDeploymentId = "deploymentId"
+	PathParamMonitorName  = "monitorName"
+	PathParamMonitorId    = "monitorId"
+	PathParamRunId        = "runId"
+	PathParamEvaluatorId  = "evaluatorId"
+	PathParamSecretName   = "secretName"
 )
 
 // Pagination constants
 const (
-	DefaultLimit  = 10
+	DefaultLimit  = 50
 	MinLimit      = 1
-	MaxLimit      = 50
+	MaxLimit      = 100
 	DefaultOffset = 0
 	MinOffset     = 0
+)
+
+// Log filter constants
+const (
+	DefaultLogLimit     = 100
+	MinLogLimit         = 0
+	MaxLogLimit         = 10000 // openchoreo observability service max limit
+	MaxLogTimeRangeDays = 14    // Maximum time range for log queries in days
+	SortOrderAsc        = "asc"
+	SortOrderDesc       = "desc"
+)
+
+// Valid log levels
+const (
+	LogLevelInfo  = "INFO"
+	LogLevelDebug = "DEBUG"
+	LogLevelWarn  = "WARN"
+	LogLevelError = "ERROR"
+)
+
+// Deployment state constants
+const (
+	DeploymentStateActive   = "Active"
+	DeploymentStateUndeploy = "Undeploy"
+)
+
+// Git secret constants
+const (
+	GitSecretTypeBasicAuth = "basic-auth"
 )

@@ -39,7 +39,7 @@ From the `console/` directory, install all dependencies for the monorepo:
 
 ```bash
 cd console
-rush install
+make install
 ```
 
 This command will:
@@ -52,29 +52,27 @@ This command will:
 Build all shared libraries first:
 
 ```bash
-rush build --to @agent-management-platform/webapp
+make build-webapp
 ```
 
 Or build all projects:
 ```bash
-rush build
+make build
 ```
 
 ### 3. Start Development Server
 
-Start the webapp development server:
-
 ```bash
-rushx --to @agent-management-platform/webapp dev
+make dev
 ```
 
-Or navigate to the webapp directory and run directly:
-```bash
-cd apps/webapp
-rushx dev
-```
+This will:
+- Start all library dependencies in watch mode
+- Launch the Vite dev server at `http://localhost:3000`
+- Automatically rebuild dependencies when you make changes
+- Hot-reload the webapp when dependencies update
 
-The development server will start on `http://localhost:5173` (or the next available port).
+Press `Ctrl+C` to stop all processes.
 
 ### 4. Environment Configuration
 
@@ -93,6 +91,28 @@ window.APP_CONFIG = {
 ```
 
 ## Available Commands
+
+### Make Commands (Recommended)
+
+```bash
+# Start development mode with hot-reload
+make dev
+
+# Install dependencies
+make install
+
+# Build all projects
+make build
+
+# Clean build outputs
+make clean
+
+# Purge Rush cache
+make purge
+
+# Show all available commands
+make help
+```
 
 ### Rush Commands
 
@@ -118,8 +138,6 @@ rush purge
 # Update dependencies
 rush update
 
-# Create a new page component
-rush create-page
 ```
 
 ### Project-Specific Commands
@@ -145,68 +163,6 @@ rushx lint:fix
 rushx preview
 ```
 
-## Creating New Page Components
-
-Create new page components with the same structure and dependencies as existing pages using the integrated Yeoman generator.
-
-### Using the Page Generator
-
-From the `console/` directory, run the Rush command:
-```bash
-cd console
-rush create-page
-```
-
-**Answer the prompts**:
-   - **Package name** (e.g., `user-dashboard`) - use kebab-case
-   - **Display title** (e.g., `User Dashboard`) - will auto-generate from package name
-   - **Description** (e.g., `A dashboard page for managing users`)
-   - **Route path** (e.g., `/user-dashboard`)
-
-**Example interaction**:
-```bash
-$ rush create-page
-
-? What is the name of your page package? (my-page) user-dashboard
-? What is the display title for your page? (User Dashboard) User Dashboard
-? What is the description for your page? (A page component for User Dashboard) A dashboard page for managing users
-? What is the route path for your page? (/user/dashboard) /user-dashboard
-
-Template generated successfully!
-Next steps:
-1. Add the new page to rush.json projects list
-2. Run rush update to install dependencies
-3. Run rushx build to build the package
-4. Run rushx storybook to view the component in Storybook
-```
-
-**After generating a new page, update Rush configuration**:
-
-1. **Add the new page to Rush projects list**:
-   Edit `rush.json` and add your new page to the `projects` array:
-   ```json
-   {
-     "packageName": "@agent-management-platform/your-page-name",
-     "projectFolder": "workspaces/pages/your-page-name"
-   }
-   ```
-
-2. **Update Rush to recognize the new package**:
-   ```bash
-   # Go back to console root
-   cd ../../..
-   
-   # Update Rush to recognize the new package
-   rush update
-   ```
-
-3. **Build your new page**:
-   ```bash
-   cd workspaces/pages/your-page-name
-   rushx build
-   rushx storybook  # Optional: to view in Storybook
-   ```
-
 ## Project Structure Details
 
 ### Apps
@@ -221,8 +177,4 @@ Next steps:
 
 ### Pages
 - **AgentsListPage**: Example page component (use as reference)
-- **.template**: Yeoman generator template for creating new pages (integrated with Rush)
-
-### Rush Commands
-- **create-page**: Rush command to create new page components using the Yeoman generator
 

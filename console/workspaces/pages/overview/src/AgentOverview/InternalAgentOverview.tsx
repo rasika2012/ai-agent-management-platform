@@ -35,24 +35,24 @@ import {
 } from "@wso2/oxygen-ui";
 import { generatePath, Link, useParams } from "react-router-dom";
 import { useMemo } from "react";
-import dayjs from "dayjs";
+import { formatDistanceToNow } from "date-fns";
 import { EnvironmentCard } from "@agent-management-platform/shared-component";
 import { absoluteRouteMap } from "@agent-management-platform/types";
 
 export const InternalAgentOverview = () => {
   const { orgId, agentId, projectId } = useParams();
   const { data: agent } = useGetAgent({
-    orgName: orgId ?? "default",
-    projName: projectId ?? "default",
-    agentName: agentId ?? "",
+    orgName: orgId,
+    projName: projectId,
+    agentName: agentId,
   });
   const { data: buildList } = useGetAgentBuilds({
-    orgName: orgId ?? "",
-    projName: projectId ?? "",
-    agentName: agentId ?? "",
+    orgName: orgId,
+    projName: projectId,
+    agentName: agentId,
   });
   const { data: environmentList } = useListEnvironments({
-    orgName: orgId ?? "",
+    orgName: orgId,
   });
   const theme = useTheme();
 
@@ -65,44 +65,46 @@ export const InternalAgentOverview = () => {
     });
   }, [environmentList]);
 
-  const repositoryUrl = useMemo(
-    () =>
-      `${agent?.provisioning?.repository?.url}/tree/${agent?.provisioning?.repository?.branch}/${agent?.provisioning?.repository?.appPath ?? ""}`,
-    [
-      agent?.provisioning?.repository?.url,
-      agent?.provisioning?.repository?.branch,
-      agent?.provisioning?.repository?.appPath,
-    ]
-  );
+  const createdAtText = agent?.createdAt
+    ? formatDistanceToNow(new Date(agent.createdAt), { addSuffix: true })
+    : "—";
+
+  const repositoryUrl = useMemo(() => {
+    const { appPath, branch, url } = agent?.provisioning?.repository ?? {};
+
+    // If appPath is "/" (root), don't append it to avoid double slashes
+    // Otherwise, remove the leading slash from appPath before appending
+    if (appPath && appPath !== '/') {
+      const normalizedPath = appPath.startsWith('/') ? appPath.substring(1) : appPath;
+      return `${url}/tree/${branch}/${normalizedPath}`;
+    }
+    return `${url}/tree/${branch}`;
+  }, [agent?.provisioning?.repository]);
 
   const loadingBuilds = useMemo(() => {
     return buildList?.builds.filter(
       (build) =>
-        build.status === "BuildInProgress" || build.status === "BuildTriggered"
+        build.status === "Running" || build.status === "Pending"
     );
   }, [buildList]);
 
   return (
-    <Box display="flex" flexDirection="column" gap={1.5} pb={4}>
+    <Box display="flex" flexDirection="column" gap={4}>
       <Box
         sx={{
           maxWidth: "fit-content",
-          gap: 0.5,
+          gap: 1,
           display: "flex",
           flexDirection: "column",
-          width: "50%",
         }}
       >
         <Box display="flex" flexDirection="row" gap={1} alignItems="center">
           <Typography variant="body2">Created</Typography>
-          <AccessTime size={16} />
-          <Typography variant="body2">
-            {dayjs(agent?.createdAt).fromNow()}
-          </Typography>
+          <AccessTime size={14} />
+          <Typography variant="body2">{createdAtText}</Typography>
         </Box>
-
         <Box display="flex" flexDirection="row" gap={1} alignItems="center">
-          <Typography variant="body2" >
+          <Typography variant="body2" width={100} noWrap>
             Source Code:
           </Typography>
           <Button
@@ -116,11 +118,13 @@ export const InternalAgentOverview = () => {
             href={repositoryUrl}
             target="_blank"
           >
-            {repositoryUrl}
+            <Typography variant="body2" noWrap>
+              {repositoryUrl}
+            </Typography>
           </Button>
         </Box>
         <Box display="flex" flexDirection="row" gap={1} alignItems="center">
-          <Typography variant="body2">
+          <Typography variant="body2" width={100} noWrap>
             Build Status:
           </Typography>
           {loadingBuilds?.length && loadingBuilds.length > 0 ? (
@@ -164,7 +168,7 @@ export const InternalAgentOverview = () => {
           )}
         </Box>
       </Box>
-      {sortedEnvironmentList?.length && (
+      {sortedEnvironmentList && sortedEnvironmentList?.length > 0 && (
         <>
           {sortedEnvironmentList.map(
             (environment) =>

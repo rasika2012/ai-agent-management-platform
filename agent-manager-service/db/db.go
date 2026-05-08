@@ -29,8 +29,8 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/config"
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/db/connpool"
+	"github.com/wso2/agent-manager/agent-manager-service/config"
+	"github.com/wso2/agent-manager/agent-manager-service/db/connpool"
 )
 
 var db *gorm.DB
@@ -104,6 +104,13 @@ func setConfigsOnDB(db *sql.DB, cfg config.DbConfigs) {
 	if cfg.MaxIdleCount != nil {
 		db.SetMaxIdleConns(int(*cfg.MaxIdleCount))
 	}
+}
+
+// GetDB returns the raw database instance without any context attached.
+// This should be used when injecting the DB into repositories that will
+// add context per-operation using db.DB(ctx).
+func GetDB() *gorm.DB {
+	return db
 }
 
 func makeConnString(p config.POSTGRESQL) string {

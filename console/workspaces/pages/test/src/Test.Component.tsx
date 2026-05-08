@@ -16,15 +16,93 @@
  * under the License.
  */
 
-import React from 'react';
-import { AgentTest } from './AgentTest/AgentTest';
-import { FadeIn } from '@agent-management-platform/views';
+import React from "react";
+import { AgentChat } from "./AgentTest/AgentChat";
+import {
+  NoDataFound,
+  PageLayout,
+} from "@agent-management-platform/views";
+import { Box, Skeleton } from "@wso2/oxygen-ui";
+import { Rocket } from "@wso2/oxygen-ui-icons-react";
+import { useParams } from "react-router-dom";
+import { Swagger } from "./AgentTest/Swagger";
+import {
+  useGetAgent,
+  useListAgentDeployments,
+} from "@agent-management-platform/api-client";
+
+const SkeletonTestPageLayout: React.FC = () => {
+  return (
+    <Box
+      display="flex"
+      flexDirection="column"
+      alignItems="center"
+      justifyContent="center"
+      gap={2}
+      height="60vh"
+    >
+      <Skeleton variant="circular" width={80} height={80} />
+      <Skeleton variant="text" width={250} height={32} />
+      <Skeleton variant="text" width={350} height={20} />
+      <Skeleton variant="rounded" width={500} height={48} sx={{ mt: 2 }} />
+    </Box>
+  );
+};
 
 export const TestComponent: React.FC = () => {
+  const { orgId, projectId, agentId, envId } = useParams<{
+    orgId: string;
+    projectId: string;
+    agentId: string;
+    envId: string;
+  }>();
+
+  const { data: agent, isLoading: isAgentLoading } = useGetAgent({
+    orgName: orgId,
+    projName: projectId,
+    agentName: agentId,
+  });
+
+  const isChatAgent = agent?.agentType?.subType === "chat-api";
+
+  const { data: deployments, isLoading: isDeploymentsLoading } =
+    useListAgentDeployments({
+      orgName: orgId,
+      projName: projectId,
+      agentName: agentId,
+    });
+  const currentDeployment = deployments?.[envId ?? ""];
+
+  const isLoading = isDeploymentsLoading || isAgentLoading;
+
+  if (!isLoading && currentDeployment?.status !== "active") {
+    return (
+      <PageLayout title="Try your agent" disableIcon>
+        <Box
+          height="50vh"
+          display="flex"
+          justifyContent="center"
+          alignItems="center"
+        >
+          <NoDataFound
+            iconElement={Rocket}
+            disableBackground
+            message="Agent is not deployed"
+            subtitle="Deploy your agent to try it out. You can deploy your agent by clicking the deploy button in the deploy tab."
+          />
+        </Box>
+      </PageLayout>
+    );
+  }
+
   return (
-    <FadeIn>
-        <AgentTest />
-    </FadeIn>
+    <PageLayout title={"Try your agent"} disableIcon isLoading={isLoading}>
+      {isLoading ? (
+        <SkeletonTestPageLayout />
+      ) : (
+        <>{isChatAgent ? <AgentChat /> : <Swagger />}</>
+      )}
+    </PageLayout>
   );
 };
 

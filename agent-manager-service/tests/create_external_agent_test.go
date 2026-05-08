@@ -25,55 +25,32 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/clients/clientmocks"
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/middleware/jwtassertion"
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/models"
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/spec"
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/tests/apitestutils"
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/utils"
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/wiring"
+	"github.com/wso2/agent-manager/agent-manager-service/clients/clientmocks"
+	"github.com/wso2/agent-manager/agent-manager-service/clients/openchoreosvc/client"
+	"github.com/wso2/agent-manager/agent-manager-service/middleware/jwtassertion"
+	"github.com/wso2/agent-manager/agent-manager-service/spec"
+	"github.com/wso2/agent-manager/agent-manager-service/tests/apitestutils"
+	"github.com/wso2/agent-manager/agent-manager-service/utils"
+	"github.com/wso2/agent-manager/agent-manager-service/wiring"
 )
 
 var (
-	testExternalOrgId        = uuid.New()
-	testExternalProjId       = uuid.New()
-	testExternalUserIdpId    = uuid.New()
 	testExternalOrgName      = fmt.Sprintf("test-org-%s", uuid.New().String()[:5])
 	testExternalProjName     = fmt.Sprintf("test-project-%s", uuid.New().String()[:5])
-	testExternalAgentNameOne = fmt.Sprintf("test-external-agent-%s", uuid.New().String()[:5])
-	testExternalAgentNameTwo = fmt.Sprintf("test-external-agent-%s", uuid.New().String()[:5])
+	testExternalAgentNameOne = fmt.Sprintf("nonexistent-agent-%s", uuid.New().String()[:5])
 )
 
-func createMockOpenChoreoClientForExternal() *clientmocks.OpenChoreoSvcClientMock {
-	return &clientmocks.OpenChoreoSvcClientMock{
-		GetProjectFunc: func(ctx context.Context, projectName string, orgName string) (*models.ProjectResponse, error) {
-			return &models.ProjectResponse{
-				Name:        projectName,
-				DisplayName: projectName,
-				OrgName:     orgName,
-				CreatedAt:   time.Now(),
-			}, nil
-		},
-		// External agents don't need component creation in OpenChoreo
-		IsAgentComponentExistsFunc: func(ctx context.Context, orgName string, projName string, agentName string) (bool, error) {
-			return false, nil
-		},
-	}
-}
-
 func TestCreateExternalAgent(t *testing.T) {
-	setUpExternalTest(t)
-	authMiddleware := jwtassertion.NewMockMiddleware(t, testExternalOrgId, testExternalUserIdpId)
+	authMiddleware := jwtassertion.NewMockMiddleware(t)
 
 	t.Run("Creating an external agent should return 202", func(t *testing.T) {
-		openChoreoClient := createMockOpenChoreoClientForExternal()
+		openChoreoClient := apitestutils.CreateMockOpenChoreoClient()
 		testClients := wiring.TestClients{
-			OpenChoreoSvcClient: openChoreoClient,
+			OpenChoreoClient: openChoreoClient,
 		}
 
 		app := apitestutils.MakeAppClientWithDeps(t, testClients, authMiddleware)
@@ -86,6 +63,9 @@ func TestCreateExternalAgent(t *testing.T) {
 			"description": "Test External Agent Description",
 			"provisioning": map[string]interface{}{
 				"type": "external",
+			},
+			"agentType": map[string]interface{}{
+				"type": "agent-api",
 			},
 		})
 		require.NoError(t, err)
@@ -124,7 +104,7 @@ func TestCreateExternalAgent(t *testing.T) {
 		wantStatus     int
 		wantErrMsg     string
 		url            string
-		setupMock      func() *clientmocks.OpenChoreoSvcClientMock
+		setupMock      func() *clientmocks.OpenChoreoClientMock
 	}{
 		{
 			name:           "return 400 on missing agent name for external agent",
@@ -135,12 +115,15 @@ func TestCreateExternalAgent(t *testing.T) {
 				"provisioning": map[string]interface{}{
 					"type": "external",
 				},
+				"agentType": map[string]interface{}{
+					"type": "agent-api",
+				},
 			},
 			wantStatus: 400,
-			wantErrMsg: "invalid agent name: agent name cannot be empty",
+			wantErrMsg: "Agent name cannot be empty",
 			url:        fmt.Sprintf("/api/v1/orgs/%s/projects/%s/agents", testExternalOrgName, testExternalProjName),
-			setupMock: func() *clientmocks.OpenChoreoSvcClientMock {
-				return createMockOpenChoreoClientForExternal()
+			setupMock: func() *clientmocks.OpenChoreoClientMock {
+				return apitestutils.CreateMockOpenChoreoClient()
 			},
 		},
 		{
@@ -153,12 +136,15 @@ func TestCreateExternalAgent(t *testing.T) {
 				"provisioning": map[string]interface{}{
 					"type": "external",
 				},
+				"agentType": map[string]interface{}{
+					"type": "agent-api",
+				},
 			},
 			wantStatus: 400,
-			wantErrMsg: "invalid agent name: agent name must contain only lowercase alphanumeric characters or '-'",
+			wantErrMsg: "Agent name must contain only lowercase alphanumeric characters or '-'",
 			url:        fmt.Sprintf("/api/v1/orgs/%s/projects/%s/agents", testExternalOrgName, testExternalProjName),
-			setupMock: func() *clientmocks.OpenChoreoSvcClientMock {
-				return createMockOpenChoreoClientForExternal()
+			setupMock: func() *clientmocks.OpenChoreoClientMock {
+				return apitestutils.CreateMockOpenChoreoClient()
 			},
 		},
 		{
@@ -170,12 +156,15 @@ func TestCreateExternalAgent(t *testing.T) {
 				"provisioning": map[string]interface{}{
 					"type": "external",
 				},
+				"agentType": map[string]interface{}{
+					"type": "agent-api",
+				},
 			},
 			wantStatus: 400,
-			wantErrMsg: "invalid agent display name: agent name cannot be empty",
+			wantErrMsg: "Agent display name cannot be empty",
 			url:        fmt.Sprintf("/api/v1/orgs/%s/projects/%s/agents", testExternalOrgName, testExternalProjName),
-			setupMock: func() *clientmocks.OpenChoreoSvcClientMock {
-				return createMockOpenChoreoClientForExternal()
+			setupMock: func() *clientmocks.OpenChoreoClientMock {
+				return apitestutils.CreateMockOpenChoreoClient()
 			},
 		},
 		{
@@ -188,12 +177,15 @@ func TestCreateExternalAgent(t *testing.T) {
 				"provisioning": map[string]interface{}{
 					// Missing "type" field
 				},
+				"agentType": map[string]interface{}{
+					"type": "agent-api",
+				},
 			},
 			wantStatus: 400,
 			wantErrMsg: "provisioning type must be either 'internal' or 'external'",
 			url:        fmt.Sprintf("/api/v1/orgs/%s/projects/%s/agents", testExternalOrgName, testExternalProjName),
-			setupMock: func() *clientmocks.OpenChoreoSvcClientMock {
-				return createMockOpenChoreoClientForExternal()
+			setupMock: func() *clientmocks.OpenChoreoClientMock {
+				return apitestutils.CreateMockOpenChoreoClient()
 			},
 		},
 		{
@@ -206,12 +198,15 @@ func TestCreateExternalAgent(t *testing.T) {
 				"provisioning": map[string]interface{}{
 					"type": "managed", // Invalid type
 				},
+				"agentType": map[string]interface{}{
+					"type": "agent-api",
+				},
 			},
 			wantStatus: 400,
 			wantErrMsg: "provisioning type must be either 'internal' or 'external'",
 			url:        fmt.Sprintf("/api/v1/orgs/%s/projects/%s/agents", testExternalOrgName, testExternalProjName),
-			setupMock: func() *clientmocks.OpenChoreoSvcClientMock {
-				return createMockOpenChoreoClientForExternal()
+			setupMock: func() *clientmocks.OpenChoreoClientMock {
+				return apitestutils.CreateMockOpenChoreoClient()
 			},
 		},
 		{
@@ -224,12 +219,15 @@ func TestCreateExternalAgent(t *testing.T) {
 				"provisioning": map[string]interface{}{
 					"type": "external",
 				},
+				"agentType": map[string]interface{}{
+					"type": "agent-api",
+				},
 			},
 			wantStatus: 404,
 			wantErrMsg: "Organization not found",
 			url:        fmt.Sprintf("/api/v1/orgs/nonexistent-org/projects/%s/agents", testExternalProjName),
-			setupMock: func() *clientmocks.OpenChoreoSvcClientMock {
-				return createMockOpenChoreoClientForExternal()
+			setupMock: func() *clientmocks.OpenChoreoClientMock {
+				return apitestutils.CreateMockOpenChoreoClient()
 			},
 		},
 		{
@@ -242,12 +240,22 @@ func TestCreateExternalAgent(t *testing.T) {
 				"provisioning": map[string]interface{}{
 					"type": "external",
 				},
+				"agentType": map[string]interface{}{
+					"type": "agent-api",
+				},
 			},
 			wantStatus: 404,
 			wantErrMsg: "Project not found",
 			url:        fmt.Sprintf("/api/v1/orgs/%s/projects/nonexistent-project/agents", testExternalOrgName),
-			setupMock: func() *clientmocks.OpenChoreoSvcClientMock {
-				return createMockOpenChoreoClientForExternal()
+			setupMock: func() *clientmocks.OpenChoreoClientMock {
+				mock := apitestutils.CreateMockOpenChoreoClient()
+				mock.CreateComponentFunc = func(ctx context.Context, namespaceName string, projectName string, req client.CreateComponentRequest) error {
+					if projectName == "nonexistent-project" {
+						return utils.ErrProjectNotFound
+					}
+					return nil
+				}
+				return mock
 			},
 		},
 		{
@@ -260,12 +268,20 @@ func TestCreateExternalAgent(t *testing.T) {
 				"provisioning": map[string]interface{}{
 					"type": "external",
 				},
+				"agentType": map[string]interface{}{
+					"type": "agent-api",
+				},
 			},
 			wantStatus: 409,
 			wantErrMsg: "Agent already exists",
 			url:        fmt.Sprintf("/api/v1/orgs/%s/projects/%s/agents", testExternalOrgName, testExternalProjName),
-			setupMock: func() *clientmocks.OpenChoreoSvcClientMock {
-				return createMockOpenChoreoClientForExternal()
+			setupMock: func() *clientmocks.OpenChoreoClientMock {
+				mock := apitestutils.CreateMockOpenChoreoClient()
+				// Override CreateComponentFunc to return error indicating agent already exists
+				mock.CreateComponentFunc = func(ctx context.Context, namespaceName string, projectName string, req client.CreateComponentRequest) error {
+					return utils.ErrAgentAlreadyExists
+				}
+				return mock
 			},
 		},
 		{
@@ -282,12 +298,15 @@ func TestCreateExternalAgent(t *testing.T) {
 				"provisioning": map[string]interface{}{
 					"type": "external",
 				},
+				"agentType": map[string]interface{}{
+					"type": "agent-api",
+				},
 			},
 			wantStatus: 401,
 			wantErrMsg: "missing header: Authorization",
 			url:        fmt.Sprintf("/api/v1/orgs/%s/projects/%s/agents", testExternalOrgName, testExternalProjName),
-			setupMock: func() *clientmocks.OpenChoreoSvcClientMock {
-				return createMockOpenChoreoClientForExternal()
+			setupMock: func() *clientmocks.OpenChoreoClientMock {
+				return apitestutils.CreateMockOpenChoreoClient()
 			},
 		},
 	}
@@ -296,7 +315,7 @@ func TestCreateExternalAgent(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			openChoreoClient := tt.setupMock()
 			testClients := wiring.TestClients{
-				OpenChoreoSvcClient: openChoreoClient,
+				OpenChoreoClient: openChoreoClient,
 			}
 
 			app := apitestutils.MakeAppClientWithDeps(t, testClients, tt.authMiddleware)
@@ -331,9 +350,4 @@ func TestCreateExternalAgent(t *testing.T) {
 			}
 		})
 	}
-}
-
-func setUpExternalTest(t *testing.T) {
-	_ = apitestutils.CreateOrganization(t, testExternalOrgId, testExternalUserIdpId, testExternalOrgName)
-	_ = apitestutils.CreateProject(t, testExternalProjId, testExternalOrgId, testExternalProjName)
 }

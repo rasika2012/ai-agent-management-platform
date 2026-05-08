@@ -24,7 +24,7 @@ import (
 	"github.com/go-gormigrate/gormigrate/v2"
 	"gorm.io/gorm"
 
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/db"
+	"github.com/wso2/agent-manager/agent-manager-service/db"
 )
 
 var migrateOptions = &gormigrate.Options{
@@ -46,7 +46,6 @@ func Migrate() error {
 	successCount := 0
 	var list []*gormigrate.Migration
 	for _, m := range migrations {
-		m := m
 		id := generateIdStr(m.ID)
 		list = append(list, &gormigrate.Migration{
 			ID: id,

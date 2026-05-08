@@ -23,11 +23,10 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/middleware/jwtassertion"
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/middleware/logger"
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/services"
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/spec"
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/utils"
+	"github.com/wso2/agent-manager/agent-manager-service/middleware/logger"
+	"github.com/wso2/agent-manager/agent-manager-service/services"
+	"github.com/wso2/agent-manager/agent-manager-service/spec"
+	"github.com/wso2/agent-manager/agent-manager-service/utils"
 )
 
 type InfraResourceController interface {
@@ -38,6 +37,7 @@ type InfraResourceController interface {
 	ListProjects(w http.ResponseWriter, r *http.Request)
 	GetProject(w http.ResponseWriter, r *http.Request)
 	CreateProject(w http.ResponseWriter, r *http.Request)
+	UpdateProject(w http.ResponseWriter, r *http.Request)
 	DeleteProject(w http.ResponseWriter, r *http.Request)
 	ListOrgDeploymentPipelines(w http.ResponseWriter, r *http.Request)
 	GetDataplanes(w http.ResponseWriter, r *http.Request)
@@ -57,10 +57,6 @@ func NewInfraResourceController(infraResourceManager services.InfraResourceManag
 func (c *infraResourceController) ListOrganizations(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	log := logger.GetLogger(ctx)
-
-	// Extract user info from JWT token
-	tokenClaims := jwtassertion.GetTokenClaims(ctx)
-	userIdpId := tokenClaims.Sub
 
 	// Parse query parameters
 	limitStr := r.URL.Query().Get("limit")
@@ -86,10 +82,10 @@ func (c *infraResourceController) ListOrganizations(w http.ResponseWriter, r *ht
 		return
 	}
 
-	orgs, total, err := c.infraResourceManager.ListOrganizations(ctx, userIdpId, limit, offset)
+	orgs, total, err := c.infraResourceManager.ListOrganizations(ctx, limit, offset)
 	if err != nil {
 		log.Error("ListOrganizations: failed to list organizations", "error", err)
-		utils.WriteErrorResponse(w, http.StatusInternalServerError, "Failed to list organizations")
+		handleCommonErrors(w, err, "Failed to list organizations")
 		return
 	}
 
@@ -110,18 +106,10 @@ func (c *infraResourceController) GetOrganization(w http.ResponseWriter, r *http
 	// Extract path parameters
 	orgName := r.PathValue(utils.PathParamOrgName)
 
-	// Extract user info from JWT token
-	tokenClaims := jwtassertion.GetTokenClaims(ctx)
-	userIdpId := tokenClaims.Sub
-
-	org, err := c.infraResourceManager.GetOrganization(ctx, userIdpId, orgName)
+	org, err := c.infraResourceManager.GetOrganization(ctx, orgName)
 	if err != nil {
 		log.Error("GetOrganization: failed to get organization", "error", err)
-		if errors.Is(err, utils.ErrOrganizationNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Organization not found")
-			return
-		}
-		utils.WriteErrorResponse(w, http.StatusInternalServerError, "Failed to get organization")
+		handleCommonErrors(w, err, "Failed to get organization")
 		return
 	}
 
@@ -161,18 +149,10 @@ func (c *infraResourceController) ListProjects(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Extract user info from JWT token
-	tokenClaims := jwtassertion.GetTokenClaims(ctx)
-	userIdpId := tokenClaims.Sub
-
-	projects, total, err := c.infraResourceManager.ListProjects(ctx, userIdpId, orgName, limit, offset)
+	projects, total, err := c.infraResourceManager.ListProjects(ctx, orgName, limit, offset)
 	if err != nil {
 		log.Error("ListProjects: failed to list projects", "error", err)
-		if errors.Is(err, utils.ErrOrganizationNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Organization not found")
-			return
-		}
-		utils.WriteErrorResponse(w, http.StatusInternalServerError, "Failed to list projects")
+		handleCommonErrors(w, err, "Failed to list projects")
 		return
 	}
 	projectList := utils.ConvertToProjectListResponse(projects)
@@ -192,10 +172,6 @@ func (c *infraResourceController) CreateProject(w http.ResponseWriter, r *http.R
 	// Extract path parameters
 	orgName := r.PathValue(utils.PathParamOrgName)
 
-	// Extract user info from JWT token
-	tokenClaims := jwtassertion.GetTokenClaims(ctx)
-	userIdpId := tokenClaims.Sub
-
 	// Parse and validate request body
 	var payload spec.CreateProjectRequest
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -206,13 +182,13 @@ func (c *infraResourceController) CreateProject(w http.ResponseWriter, r *http.R
 
 	if err := utils.ValidateResourceName(payload.Name, "project"); err != nil {
 		log.Error("CreateProject: invalid project name", "projectName", payload.Name, "error", err)
-		utils.WriteErrorResponse(w, http.StatusBadRequest, "Invalid project name")
+		utils.WriteValidationErrorResponse(w, err)
 		return
 	}
 
 	if err := utils.ValidateResourceDisplayName(payload.DisplayName, "project"); err != nil {
 		log.Error("CreateProject: invalid project display name", "projectDisplayName", payload.DisplayName, "error", err)
-		utils.WriteErrorResponse(w, http.StatusBadRequest, "Invalid project display name")
+		utils.WriteValidationErrorResponse(w, err)
 		return
 	}
 
@@ -222,22 +198,10 @@ func (c *infraResourceController) CreateProject(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	project, err := c.infraResourceManager.CreateProject(ctx, userIdpId, orgName, payload)
+	project, err := c.infraResourceManager.CreateProject(ctx, orgName, payload)
 	if err != nil {
 		log.Error("CreateProject: failed to create project", "error", err)
-		if errors.Is(err, utils.ErrOrganizationNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Organization not found")
-			return
-		}
-		if errors.Is(err, utils.ErrProjectAlreadyExists) {
-			utils.WriteErrorResponse(w, http.StatusConflict, "Project already exists")
-			return
-		}
-		if errors.Is(err, utils.ErrDeploymentPipelineNotFound) {
-			utils.WriteErrorResponse(w, http.StatusBadRequest, "Deployment pipeline not found")
-			return
-		}
-		utils.WriteErrorResponse(w, http.StatusInternalServerError, "Failed to create project")
+		handleCommonErrors(w, err, "Failed to create project")
 		return
 	}
 	projectResponse := spec.ProjectResponse{
@@ -252,6 +216,47 @@ func (c *infraResourceController) CreateProject(w http.ResponseWriter, r *http.R
 	utils.WriteSuccessResponse(w, http.StatusAccepted, projectResponse)
 }
 
+func (c *infraResourceController) UpdateProject(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	log := logger.GetLogger(ctx)
+
+	// Extract path parameters
+	orgName := r.PathValue(utils.PathParamOrgName)
+	projectName := r.PathValue(utils.PathParamProjName)
+
+	// Parse and validate request body
+	var payload spec.UpdateProjectRequest
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		log.Error("UpdateProject: failed to decode request body", "error", err)
+		utils.WriteErrorResponse(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if err := utils.ValidateProjectUpdatePayload(payload); err != nil {
+		log.Error("UpdateProject: invalid project payload", "error", err)
+		utils.WriteValidationErrorResponse(w, err)
+		return
+	}
+
+	project, err := c.infraResourceManager.UpdateProject(ctx, orgName, projectName, payload)
+	if err != nil {
+		log.Error("UpdateProject: failed to update project", "error", err)
+		handleCommonErrors(w, err, "Failed to update project")
+		return
+	}
+
+	projectResponse := spec.ProjectResponse{
+		Name:               project.Name,
+		DisplayName:        project.DisplayName,
+		Description:        project.Description,
+		DeploymentPipeline: project.DeploymentPipeline,
+		OrgName:            project.OrgName,
+		CreatedAt:          project.CreatedAt,
+	}
+
+	utils.WriteSuccessResponse(w, http.StatusOK, projectResponse)
+}
+
 func (c *infraResourceController) DeleteProject(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	log := logger.GetLogger(ctx)
@@ -260,22 +265,10 @@ func (c *infraResourceController) DeleteProject(w http.ResponseWriter, r *http.R
 	orgName := r.PathValue(utils.PathParamOrgName)
 	projectName := r.PathValue(utils.PathParamProjName)
 
-	// Extract user info from JWT token
-	tokenClaims := jwtassertion.GetTokenClaims(ctx)
-	userIdpId := tokenClaims.Sub
-
-	err := c.infraResourceManager.DeleteProject(ctx, userIdpId, orgName, projectName)
+	err := c.infraResourceManager.DeleteProject(ctx, orgName, projectName)
 	if err != nil {
 		log.Error("DeleteProject: failed to delete project", "error", err)
-		if errors.Is(err, utils.ErrOrganizationNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Organization not found")
-			return
-		}
-		if errors.Is(err, utils.ErrProjectHasAssociatedAgents) {
-			utils.WriteErrorResponse(w, http.StatusConflict, "Project has associated agents")
-			return
-		}
-		utils.WriteErrorResponse(w, http.StatusInternalServerError, "Failed to delete project")
+		handleCommonErrors(w, err, "Failed to delete project")
 		return
 	}
 
@@ -288,10 +281,6 @@ func (c *infraResourceController) ListOrgDeploymentPipelines(w http.ResponseWrit
 
 	// Extract path parameters
 	orgName := r.PathValue(utils.PathParamOrgName)
-
-	// Extract user info from JWT token
-	tokenClaims := jwtassertion.GetTokenClaims(ctx)
-	userIdpId := tokenClaims.Sub
 
 	// Parse query parameters
 	limitStr := r.URL.Query().Get("limit")
@@ -318,14 +307,10 @@ func (c *infraResourceController) ListOrgDeploymentPipelines(w http.ResponseWrit
 		return
 	}
 
-	deploymentPipelines, total, err := c.infraResourceManager.ListOrgDeploymentPipelines(ctx, userIdpId, orgName, limit, offset)
+	deploymentPipelines, total, err := c.infraResourceManager.ListOrgDeploymentPipelines(ctx, orgName, limit, offset)
 	if err != nil {
 		log.Error("ListOrgDeploymentPipelines: failed to get deployment pipelines", "error", err)
-		if errors.Is(err, utils.ErrOrganizationNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Organization not found")
-			return
-		}
-		utils.WriteErrorResponse(w, http.StatusInternalServerError, "Failed to get deployment pipelines")
+		handleCommonErrors(w, err, "Failed to get deployment pipelines")
 		return
 	}
 
@@ -341,11 +326,7 @@ func (c *infraResourceController) GetProject(w http.ResponseWriter, r *http.Requ
 	orgName := r.PathValue(utils.PathParamOrgName)
 	projectName := r.PathValue(utils.PathParamProjName)
 
-	// Extract user info from JWT token
-	tokenClaims := jwtassertion.GetTokenClaims(ctx)
-	userIdpId := tokenClaims.Sub
-
-	project, err := c.infraResourceManager.GetProject(ctx, userIdpId, orgName, projectName)
+	project, err := c.infraResourceManager.GetProject(ctx, orgName, projectName)
 	if err != nil {
 		log.Error("GetProject: failed to get project", "error", err)
 		if errors.Is(err, utils.ErrOrganizationNotFound) {
@@ -372,18 +353,10 @@ func (c *infraResourceController) ListOrgEnvironments(w http.ResponseWriter, r *
 	// Extract path parameters
 	orgName := r.PathValue(utils.PathParamOrgName)
 
-	// Extract user info from JWT token
-	tokenClaims := jwtassertion.GetTokenClaims(ctx)
-	userIdpId := tokenClaims.Sub
-
-	environments, err := c.infraResourceManager.ListOrgEnvironments(ctx, userIdpId, orgName)
+	environments, err := c.infraResourceManager.ListOrgEnvironments(ctx, orgName)
 	if err != nil {
 		log.Error("ListOrgEnvironments: failed to get environments", "error", err)
-		if errors.Is(err, utils.ErrOrganizationNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Organization not found")
-			return
-		}
-		utils.WriteErrorResponse(w, http.StatusInternalServerError, "Failed to get environments")
+		handleCommonErrors(w, err, "Failed to get environments")
 		return
 	}
 	environmentsListResponse := utils.ConvertToEnvironmentListResponse(environments)
@@ -398,27 +371,14 @@ func (c *infraResourceController) GetProjectDeploymentPipeline(w http.ResponseWr
 	orgName := r.PathValue(utils.PathParamOrgName)
 	projectName := r.PathValue(utils.PathParamProjName)
 
-	// Extract user info from JWT token
-	tokenClaims := jwtassertion.GetTokenClaims(ctx)
-	userIdpId := tokenClaims.Sub
-
-	deploymentPipeline, err := c.infraResourceManager.GetProjectDeploymentPipeline(ctx, userIdpId, orgName, projectName)
+	deploymentPipeline, err := c.infraResourceManager.GetProjectDeploymentPipeline(ctx, orgName, projectName)
 	if err != nil {
 		log.Error("GetProjectDeploymentPipeline: failed to get deployment pipeline", "error", err)
-		if errors.Is(err, utils.ErrOrganizationNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Organization not found")
-			return
-		}
-		if errors.Is(err, utils.ErrProjectNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Project not found")
-			return
-		}
-		utils.WriteErrorResponse(w, http.StatusInternalServerError, "Failed to get deployment pipeline")
+		handleCommonErrors(w, err, "Failed to get deployment pipeline")
 		return
 	}
 
 	deploymentPipelineResponse := utils.ConvertToDeploymentPipelineResponse(deploymentPipeline)
-
 	utils.WriteSuccessResponse(w, http.StatusOK, deploymentPipelineResponse)
 }
 
@@ -429,18 +389,10 @@ func (c *infraResourceController) GetDataplanes(w http.ResponseWriter, r *http.R
 	// Extract path parameters
 	orgName := r.PathValue(utils.PathParamOrgName)
 
-	// Extract user info from JWT token
-	tokenClaims := jwtassertion.GetTokenClaims(ctx)
-	userIdpId := tokenClaims.Sub
-
-	dataplanes, err := c.infraResourceManager.GetDataplanes(ctx, userIdpId, orgName)
+	dataplanes, err := c.infraResourceManager.GetDataplanes(ctx, orgName)
 	if err != nil {
 		log.Error("GetDataplanes: failed to get dataplanes", "error", err)
-		if errors.Is(err, utils.ErrOrganizationNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Organization not found")
-			return
-		}
-		utils.WriteErrorResponse(w, http.StatusInternalServerError, "Failed to get dataplanes")
+		handleCommonErrors(w, err, "Failed to list dataplanes")
 		return
 	}
 	dataplaneListResponse := utils.ConvertToDataPlaneListResponse(dataplanes)

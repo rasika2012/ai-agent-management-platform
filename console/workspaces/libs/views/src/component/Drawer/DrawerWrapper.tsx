@@ -16,18 +16,22 @@
  * under the License.
  */
 
-import { Drawer, useTheme, DrawerProps } from "@wso2/oxygen-ui";
-import { ReactNode } from "react";
+import { Drawer, useTheme, type DrawerProps } from "@wso2/oxygen-ui";
+import type { ReactNode } from "react";
 
 export interface DrawerWrapperProps extends Omit<DrawerProps, "children"> {
   children: ReactNode;
-  width?: number;
+  minWidth?: number | string;
+  maxWidth?: number | string;
+  disableScroll?: boolean;
 }
 
 export function DrawerWrapper({
   children,
-  width = 600,
+  minWidth = 700,
+  maxWidth = 1000,
   sx,
+  disableScroll = false,
   ...drawerProps
 }: DrawerWrapperProps) {
   const theme = useTheme();
@@ -40,11 +44,13 @@ export function DrawerWrapper({
       sx={[
         {
           "& .MuiDrawer-paper": {
-            width,
+            minWidth: { xs: "100vw", sm: minWidth },
+            maxWidth: { xs: "100vw", sm: maxWidth },
+            backgroundColor: theme.vars?.palette.background.default,
             px: 2,
             py: 1,
             overflow: "visible",
-            backgroundColor: "background.paper",
+            overflowY: disableScroll ? "visible" : "auto",
             borderRadius: 0,
           },
           zIndex: theme.zIndex.drawer + 2,

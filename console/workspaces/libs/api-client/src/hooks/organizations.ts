@@ -16,9 +16,9 @@
  * under the License.
  */
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { createOrganization, generateResourceName, getOrganization, listOrganizations } from "../apis";
-import {
+import type {
   OrganizationListResponse,
   OrganizationResponse,
   CreateOrganizationRequest,
@@ -29,33 +29,37 @@ import {
   GenerateResourceNamePathParams,
 } from "@agent-management-platform/types";
 import { useAuthHooks } from "@agent-management-platform/auth";
+import { useApiMutation, useApiQuery } from "./react-query-notifications";
 
 export function useListOrganizations(
   query?: ListOrganizationsQuery,
 ) {
   const { getToken } = useAuthHooks();
-  return useQuery<OrganizationListResponse>({
+  return useApiQuery<OrganizationListResponse>({
     queryKey: ['organizations', query],
     queryFn: () => listOrganizations(query, getToken),
+    retry: false,
   });
 }
 
 export function useGetOrganization(params: GetOrganizationPathParams) {
   const { getToken } = useAuthHooks();
-  return useQuery<OrganizationResponse>({
+  return useApiQuery<OrganizationResponse>({
     queryKey: ['organization', params],
     queryFn: () => getOrganization(params, getToken),
+    enabled: !!params.orgName,
   });
 }
 
 export function useCreateOrganization() {
   const { getToken } = useAuthHooks();
   const queryClient = useQueryClient();
-  return useMutation<
+  return useApiMutation<
     OrganizationResponse,
     unknown,
     CreateOrganizationRequest
   >({
+    action: { verb: 'create', target: 'organization' },
     mutationFn: (body) => createOrganization(body, getToken),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['organizations'] });
@@ -65,12 +69,15 @@ export function useCreateOrganization() {
 
 export function useGenerateResourceName(params: GenerateResourceNamePathParams) {
   const { getToken } = useAuthHooks();
-  return useMutation<
+  return useApiMutation<
     ResourceNameResponse,
     unknown,
     ResourceNameRequest
   >({
+    action: { verb: 'generate', target: 'resource name' },
+    showSuccess: false,
     mutationFn: (body) => generateResourceName(params, body, getToken),
+    mutationKey: ['generate-resource-name', params],
   });
 }
 

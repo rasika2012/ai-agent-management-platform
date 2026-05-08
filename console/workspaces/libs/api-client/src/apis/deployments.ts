@@ -17,7 +17,7 @@
  */
 
 import { httpGET, httpPOST, SERVICE_BASE } from '../utils';
-import {
+import type {
   DeployAgentPathParams,
   DeployAgentRequest,
   DeploymentListResponse,
@@ -32,6 +32,14 @@ import {
   EnvironmentListResponse,
   GetDeploymentPipelinePathParams,
   DeploymentPipelineResponse,
+  ListDataPlanesPathParams,
+  DataPlaneListResponse,
+  ListDeploymentPipelinesPathParams,
+  DeploymentPipelineListResponse,
+  ListDeploymentPipelinesQuery,
+  UpdateDeploymentStatePathParams,
+  UpdateDeploymentStateRequest,
+  UpdateDeploymentStateResponse,
 } from '@agent-management-platform/types';
 
 
@@ -40,6 +48,11 @@ import {
 export async function deployAgent(params: DeployAgentPathParams, body: DeployAgentRequest, getToken?: () => Promise<string>)
 : Promise<DeploymentResponse> {
     const { orgName = "default", projName = "default", agentName } = params;
+    
+    if (!agentName) {
+        throw new Error("agentName is required");
+    }
+    
     const token = getToken ? await getToken() : undefined;
     const res = await httpPOST(
         `${SERVICE_BASE}/orgs/${encodeURIComponent(orgName)}/projects/${encodeURIComponent(projName)}/agents/${encodeURIComponent(agentName)}/deployments`,
@@ -54,6 +67,11 @@ export async function deployAgent(params: DeployAgentPathParams, body: DeployAge
 export async function listAgentDeployments(params: ListAgentDeploymentsPathParams, getToken?: () => Promise<string>)
 : Promise<DeploymentListResponse> {
     const { orgName = "default", projName = "default", agentName } = params;
+    
+    if (!agentName) {
+        throw new Error("agentName is required");
+    }
+    
     const token = getToken ? await getToken() : undefined;
     const res = await httpGET(
         `${SERVICE_BASE}/orgs/${encodeURIComponent(orgName)}/projects/${encodeURIComponent(projName)}/agents/${encodeURIComponent(agentName)}/deployments`,
@@ -67,6 +85,11 @@ export async function listAgentDeployments(params: ListAgentDeploymentsPathParam
 export async function getAgentEndpoints(params: GetAgentEndpointsPathParams, query: EnvironmentQuery, getToken?: () => Promise<string>)
 : Promise<EndpointsResponse> {
     const { orgName = "default", projName = "default", agentName } = params;
+    
+    if (!agentName) {
+        throw new Error("agentName is required");
+    }
+    
     const token = getToken ? await getToken() : undefined;
     const search = { environment: query.environment };
     const res = await httpGET(
@@ -81,6 +104,11 @@ export async function getAgentEndpoints(params: GetAgentEndpointsPathParams, que
 export async function getAgentConfigurations(params: GetAgentConfigurationsPathParams, query: EnvironmentQuery, getToken?: () => Promise<string>)
 : Promise<ConfigurationResponse> {
     const { orgName = "default", projName = "default", agentName } = params;
+    
+    if (!agentName) {
+        throw new Error("agentName is required");
+    }
+    
     const token = getToken ? await getToken() : undefined;
     const search = { environment: query.environment };
     const res = await httpGET(
@@ -101,9 +129,8 @@ export async function listEnvironments(params: ListEnvironmentsPathParams, getTo
         { token },
     );
     if (!res.ok) throw await res.json();
-    const result = await res.json() as EnvironmentListResponse;
-    const singleEnv = result.find(env => env.name === 'development' || env.name === 'default');
-    return singleEnv? [singleEnv] : []
+    return res.json();
+
 }
 
 // eslint-disable-next-line max-len
@@ -113,6 +140,59 @@ export async function getDeploymentPipeline(params: GetDeploymentPipelinePathPar
     const token = getToken ? await getToken() : undefined;
     const res = await httpGET(
         `${SERVICE_BASE}/orgs/${encodeURIComponent(orgName)}/projects/${encodeURIComponent(projName)}/deployment-pipeline`,
+        { token },
+    );
+    if (!res.ok) throw await res.json();
+    return res.json();
+}
+
+// eslint-disable-next-line max-len
+export async function listDataPlanes(params: ListDataPlanesPathParams, getToken?: () => Promise<string>)
+: Promise<DataPlaneListResponse> {
+    const { orgName = "default" } = params;
+    const token = getToken ? await getToken() : undefined;
+    const res = await httpGET(
+        `${SERVICE_BASE}/orgs/${encodeURIComponent(orgName)}/data-planes`,
+        { token },
+    );
+    if (!res.ok) throw await res.json();
+    return res.json();
+}
+
+// eslint-disable-next-line max-len
+export async function listDeploymentPipelines(params: ListDeploymentPipelinesPathParams, query?: ListDeploymentPipelinesQuery, getToken?: () => Promise<string>)
+: Promise<DeploymentPipelineListResponse> {
+    const { orgName = "default" } = params;
+    const search = query
+        ? Object.fromEntries(
+            Object.entries(query)
+                // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                .filter(([_, v]) => v !== undefined)
+                .map(([k, v]) => [k, String(v)]),
+        )
+        : undefined;
+    const token = getToken ? await getToken() : undefined;
+    const res = await httpGET(
+        `${SERVICE_BASE}/orgs/${encodeURIComponent(orgName)}/deployment-pipelines`,
+        { searchParams: search, token },
+    );
+    if (!res.ok) throw await res.json();
+    return res.json();
+}
+
+export async function updateDeploymentState(params: UpdateDeploymentStatePathParams, 
+        body: UpdateDeploymentStateRequest, getToken?: () => Promise<string>)
+: Promise<UpdateDeploymentStateResponse> {
+    const { orgName = "default", projName = "default", agentName } = params;
+
+    if (!agentName) {
+        throw new Error("agentName is required");
+    }
+
+    const token = getToken ? await getToken() : undefined;
+    const res = await httpPOST(
+        `${SERVICE_BASE}/orgs/${encodeURIComponent(orgName)}/projects/${encodeURIComponent(projName)}/agents/${encodeURIComponent(agentName)}/deployments/state`,
+        body,
         { token },
     );
     if (!res.ok) throw await res.json();

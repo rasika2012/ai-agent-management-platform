@@ -1,22 +1,19 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
+# Get the absolute directory of this script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Change to script directory to ensure consistent working directory
+cd "$SCRIPT_DIR"
+source "$SCRIPT_DIR/env.sh"
+source "$SCRIPT_DIR/utils.sh"
 PROJECT_ROOT="$1"
-CLUSTER_NAME="openchoreo-local-v0.7"
-CLUSTER_CONTEXT="k3d-${CLUSTER_NAME}"
 
 echo "=== Installing OpenChoreo on k3d ==="
-
 # Check prerequisites
-if ! command -v helm &> /dev/null; then
-    echo "❌ Helm is not installed. Please install it first:"
-    echo "   brew install helm"
-    exit 1
-fi
-
 if ! kubectl cluster-info --context $CLUSTER_CONTEXT &> /dev/null; then
     echo "❌ K3d cluster '$CLUSTER_CONTEXT' is not running."
-    echo "   Run: ./setup-k3d.sh"
+    echo "   Run: ./setup-k3d.sh && ./setup-pre-requisites.sh"
     exit 1
 fi
 
@@ -25,7 +22,6 @@ kubectl config use-context $CLUSTER_CONTEXT
 
 echo ""
 echo "📦 Installing OpenChoreo core components..."
-echo "   Reference: https://openchoreo.dev/docs/getting-started/single-cluster/"
 echo "   This may take several minutes..."
 echo ""
 
@@ -33,247 +29,436 @@ echo ""
 # CORE COMPONENTS (Required)
 # ============================================================================
 
-# Step 1: Install OpenChoreo Control Plane
-echo "2️⃣  Installing OpenChoreo Control Plane..."
-if helm status openchoreo-control-plane -n openchoreo-control-plane &>/dev/null; then
-    echo "⏭️  Control Plane already installed, skipping..."
-else
+# Function to install Control Plane
+install_control_plane() {
+    echo "📦 Installing/Upgrading OpenChoreo Control Plane..."
     echo "   This may take up to 10 minutes..."
-    helm install openchoreo-control-plane oci://ghcr.io/openchoreo/helm-charts/openchoreo-control-plane \
-    --version 0.7.0 \
-    --namespace openchoreo-control-plane \
-    --create-namespace \
-    --values https://raw.githubusercontent.com/openchoreo/openchoreo/release-v0.7/install/k3d/single-cluster/values-cp.yaml \
-    --set global.defaultResources.enabled=false \
-    --set security.oidc.authorizationUrl=http://thunder.openchoreo.localhost:8089/oauth2/authorize
-fi
+    helm upgrade --install openchoreo-control-plane oci://ghcr.io/openchoreo/helm-charts/openchoreo-control-plane \
+        --version ${OPENCHOREO_VERSION} \
+        --namespace openchoreo-control-plane \
+        --create-namespace \
+        --values "${SCRIPT_DIR}/../single-cluster/values-cp.yaml"
 
-echo "⏳ Waiting for Control Plane pods to be ready (timeout: 10 minutes)..."
-kubectl wait --for=condition=Ready pod --all -n openchoreo-control-plane --timeout=600s
-echo "✅ OpenChoreo Control Plane ready"
-echo ""
+    echo "⏳ Waiting for Control Plane deployments to be ready (timeout: 5 minutes)..."
+    kubectl wait -n openchoreo-control-plane --for=condition=available --timeout=300s deployment --all
+    echo "✅ OpenChoreo Control Plane ready"
+}
 
-# ============================================================================
-# Step 2: Install OpenChoreo Data Plane
-echo "3️⃣  Installing OpenChoreo Data Plane..."
-if helm status openchoreo-data-plane -n openchoreo-data-plane &>/dev/null; then
-    echo "⏭️  Data Plane already installed, skipping..."
-else
-    echo "   This may take up to 10 minutes..."
-    helm install openchoreo-data-plane oci://ghcr.io/openchoreo/helm-charts/openchoreo-data-plane \
-    --version 0.7.0 \
-    --namespace openchoreo-data-plane \
-    --create-namespace \
-    --values https://raw.githubusercontent.com/openchoreo/openchoreo/release-v0.7/install/k3d/single-cluster/values-dp.yaml
-fi
+# Function to install Data Plane
+install_data_plane() {
+    echo "📦 Installing/Upgrading OpenChoreo Data Plane..."
+    echo "Setting up OC Data plane namespace and certificates..."
+    create_plane_cert_resources openchoreo-data-plane
 
-# Registering the Data Plane
-echo "5️⃣.1 Registering Data Plane..."
-if curl -s https://raw.githubusercontent.com/openchoreo/openchoreo/release-v0.7/install/add-data-plane.sh | bash -s -- --enable-agent --control-plane-context ${CLUSTER_CONTEXT} --name default; then
-    echo "✅ Data Plane registered successfully"
-else
-    echo "⚠️  Data Plane registration script failed (non-fatal)"
-fi
+    helm upgrade --install openchoreo-data-plane oci://ghcr.io/openchoreo/helm-charts/openchoreo-data-plane \
+        --version ${OPENCHOREO_VERSION} \
+        --namespace openchoreo-data-plane \
+        --create-namespace \
+        --values "${SCRIPT_DIR}/../single-cluster/values-dp.yaml"
 
- # Verify DataPlane resource and agent mode
-echo ""
-echo "🔍 Verifying DataPlane resource..."
-if kubectl get dataplane default -n default &>/dev/null; then
-    echo "✅ DataPlane resource 'default' exists"
-    AGENT_ENABLED=$(kubectl get dataplane default -n default -o jsonpath='{.spec.agent.enabled}' 2>/dev/null || echo "false")
-    if [ "$AGENT_ENABLED" = "true" ]; then
-        echo "✅ Agent mode is enabled"
-    else
-        echo "⚠️  Agent mode is not enabled (expected: true, got: $AGENT_ENABLED)"
+    echo "⏳ Waiting for Data Plane pods to be ready..."
+    kubectl wait -n openchoreo-data-plane --for=condition=available --timeout=300s deployment --all
+    echo "✅ OpenChoreo Data Plane ready"
+
+    # Register the Data Plane with the control plane
+    # Wait for the cert-manager Certificate to be Ready (not just the Secret) to avoid a race
+    # where cert-manager re-issues the cert after we read it but before the agent connects.
+    echo "⏳ Waiting for data plane agent certificate to be ready..."
+    if ! kubectl wait -n openchoreo-data-plane \
+        --for=condition=Ready certificate/cluster-agent-dataplane-tls --timeout=180s; then
+        echo "❌ Data plane agent certificate not ready. Cannot register data plane."
+        return 1
     fi
-else
-    echo "⚠️  DataPlane resource not found"
-fi
+    echo "🔗 Registering Data Plane..."
+    local ca_cert
+    ca_cert=$(kubectl get secret cluster-agent-tls -n openchoreo-data-plane -o jsonpath='{.data.ca\.crt}' | base64 -d)
+    register_data_plane "$ca_cert" "default" "default"
 
-echo "⏳ Waiting for Data Plane pods to be ready (timeout: 10 minutes)..."
-kubectl wait --for=condition=Ready pod --all -n openchoreo-data-plane --timeout=600s
-echo "✅ OpenChoreo Data Plane ready"
-echo ""
+    # Verify DataPlane
+    echo ""
+    echo "🔍 Verifying DataPlane..."
+    kubectl get clusterdataplane -n default
+    kubectl logs -n openchoreo-data-plane -l app=cluster-agent --tail=10
+    echo "✅ OpenChoreo Data Plane registered and verified"
+}
 
-# ============================================================================
-# Step 3: Install OpenChoreo Build Plane
-echo "4️⃣  Installing OpenChoreo Build Plane..."
-if helm status openchoreo-build-plane -n openchoreo-build-plane &>/dev/null; then
-    echo "⏭️  Build Plane already installed, skipping..."
-else
-    helm install openchoreo-build-plane oci://ghcr.io/openchoreo/helm-charts/openchoreo-build-plane \
-    --version 0.7.0 \
-    --namespace openchoreo-build-plane \
-    --create-namespace \
-    --values https://raw.githubusercontent.com/openchoreo/openchoreo/release-v0.7/install/k3d/single-cluster/values-bp.yaml
-fi
+# Function to install Workflow Plane
+install_workflow_plane() {
+    echo "📦 Setting up OpenChoreo Workflow Plane..."
+    echo "Setting up OC Workflow plane namespace and certificates..."
+    create_plane_cert_resources openchoreo-workflow-plane
 
-# Registering the Build Plane
-echo "5️⃣  Registering Build Plane..."
-if curl -s https://raw.githubusercontent.com/openchoreo/openchoreo/release-v0.7/install/add-build-plane.sh | bash -s -- --enable-agent --control-plane-context ${CLUSTER_CONTEXT} --name default; then
-    echo "✅ Build Plane registered successfully"
-else
-    echo "⚠️  Build Plane registration script failed (non-fatal)"
-fi
-echo ""
+    # Install Docker Registry for Workflow Plane
+    echo "🔧 Installing Docker Registry for Workflow Plane..."
+    helm upgrade --install registry docker-registry \
+      --repo https://twuni.github.io/docker-registry.helm \
+      --namespace openchoreo-workflow-plane \
+      --create-namespace \
+      --values https://raw.githubusercontent.com/openchoreo/openchoreo/v${OPENCHOREO_VERSION}/install/k3d/single-cluster/values-registry.yaml
+    
+    echo "📦 Installing/Upgrading OpenChoreo Workflow Plane..."
+    helm upgrade --install openchoreo-workflow-plane oci://ghcr.io/openchoreo/helm-charts/openchoreo-workflow-plane \
+    --version ${OPENCHOREO_VERSION} \
+    --namespace openchoreo-workflow-plane \
+    --create-namespace
 
-# Verify BuildPlane resource and agent mode
-echo ""
-echo "🔍 Verifying BuildPlane resource..."
-if kubectl get buildplane default -n default &>/dev/null; then
-    echo "✅ BuildPlane resource 'default' exists"
-    AGENT_ENABLED=$(kubectl get buildplane default -n default -o jsonpath='{.spec.agent.enabled}' 2>/dev/null || echo "false")
-    if [ "$AGENT_ENABLED" = "true" ]; then
-        echo "✅ Agent mode is enabled"
-    else
-        echo "⚠️  Agent mode is not enabled (expected: true, got: $AGENT_ENABLED)"
-    fi
-else
-    echo "⚠️  BuildPlane resource not found"
-fi
+    echo "⏳ Waiting for Workflow Plane pods to be ready..."
+    kubectl wait -n openchoreo-workflow-plane --for=condition=available --timeout=300s deployment --all
+    echo "✅ OpenChoreo Workflow Plane ready"
 
-echo "⏳ Waiting for Build Plane pods to be ready..."
-kubectl wait --for=condition=Available deployment --all -n openchoreo-build-plane --timeout=600s
-echo "✅ OpenChoreo Build Plane ready"
-echo ""
+    # Registering the Workflow Plane with the control plane
+    echo "🔗 Registering Workflow Plane..."
+    WP_CA_CERT=$(kubectl get secret cluster-agent-tls -n openchoreo-workflow-plane -o jsonpath='{.data.ca\.crt}' | base64 -d)
+    register_workflow_plane "$WP_CA_CERT" "default" "default"
 
-# Install Custom Build CI Workflows
-echo "5️⃣ Installing Custom Build CI Workflows..."
-if helm status amp-custom-build-ci-workflows -n openchoreo-build-plane &>/dev/null; then
-    echo "⏭️  Custom Build CI Workflows already installed, skipping..."
-else
-    helm install amp-custom-build-ci-workflows $PROJECT_ROOT/deployments/helm-charts/wso2-amp-build-extension --namespace openchoreo-build-plane
-    echo "✅ Custom Build CI Workflows installed successfully"
-fi
-echo ""
+    # Verify WorkflowPlane
+    echo ""
+    echo "🔍 Verifying WorkflowPlane ..."
+    kubectl get clusterworkflowplane -n default
+    kubectl logs -n openchoreo-workflow-plane -l app=cluster-agent --tail=10
+    echo "✅ OpenChoreo Workflow Plane ready"
+}
 
-# Install Default Platform Resources
-echo "6️⃣ Installing Default Platform Resources..."
-if helm status amp-default-platform-resources &>/dev/null; then
-    echo "⏭️  Platform Resources already installed, skipping..."
-else
-    echo "   Creating default Organization, Project, Environment, and DeploymentPipeline..."
-    helm install amp-default-platform-resources $PROJECT_ROOT/deployments/helm-charts/wso2-amp-default-resources-extension --namespace default
-    echo "✅ Default Platform Resources installed successfully"
-fi
-echo ""
+# Function to install Observability Plane
+install_observability_plane() {
+    echo "📦 Installing OpenChoreo Observability Plane..."
+    echo "Setting up OC Observability plane namespace and certificates..."
+    create_plane_cert_resources openchoreo-observability-plane
 
-# ============================================================================
-# Step 4: Install OpenChoreo  Observability Plane
-echo "7️⃣  Installing OpenChoreo Observability Plane..."
-if helm status openchoreo-observability-plane -n openchoreo-observability-plane &>/dev/null; then
-    echo "⏭️  Observability Plane already installed, skipping..."
-else
-    echo "   This includes OpenSearch"
-    helm install openchoreo-observability-plane oci://ghcr.io/openchoreo/helm-charts/openchoreo-observability-plane \
-    --version 0.7.0 \
+    echo "Pull Secrets for OpenChoreo Observability Plane..."
+    create_external_secrets_obs_plane
+
+    echo "⏳ Waiting for ExternalSecrets to sync..."
+    kubectl wait -n openchoreo-observability-plane \
+        --for=condition=Ready externalsecret/opensearch-admin-credentials \
+        externalsecret/observer-secret --timeout=60s
+    echo "✅ ExternalSecrets synced"
+
+    echo "   This may take up to 15 minutes..."
+    kubectl apply -f ${PROJECT_ROOT}/deployments/values/oc-collector-configmap.yaml -n openchoreo-observability-plane
+    helm upgrade --install openchoreo-observability-plane oci://ghcr.io/openchoreo/helm-charts/openchoreo-observability-plane \
+    --version ${OPENCHOREO_VERSION} \
     --namespace openchoreo-observability-plane \
     --create-namespace \
-    --values https://raw.githubusercontent.com/openchoreo/openchoreo/release-v0.7/install/k3d/single-cluster/values-op.yaml
-fi
+    --values "${SCRIPT_DIR}/../single-cluster/values-op.yaml" \
+    --timeout 25m
+    echo "✅ OpenChoreo Observability Plane installed/upgraded successfully"
 
-echo "⏳ Waiting for OpenSearch pods to be ready..."
-# Wait for deployments to be available
-kubectl wait --for=condition=Available deployment --all -n openchoreo-observability-plane --timeout=900s || {
-    echo "⚠️  Some deployments may still be starting (non-fatal)"
-}
-# Wait for statefulsets to be ready
-kubectl wait --for=jsonpath='{.status.readyReplicas}'=1 statefulset --all -n openchoreo-observability-plane --timeout=900s || {
-    echo "⚠️  Some statefulsets may still be starting (non-fatal)"
-}
-echo "✅ OpenSearch ready"
+    # Install OpenSearch based logs module
+    echo "Installing OpenSearch based logs module..."
+    helm upgrade --install observability-logs-opensearch \
+      oci://ghcr.io/openchoreo/helm-charts/observability-logs-opensearch \
+      --create-namespace \
+      --namespace openchoreo-observability-plane \
+      --version 0.3.8 \
+      --set openSearchSetup.openSearchSecretName="opensearch-admin-credentials"
+    echo "✅ OpenSearch based logs module installed"
 
-if helm status wso2-amp-observability-extension -n openchoreo-observability-plane &>/dev/null; then
-    echo "⏭️  WSO2 AMP Observability Extension already installed, skipping..."
-else
-    echo "Building and loading Traces Observer Service Docker image into k3d cluster..."
-    make -C $1/traces-observer-service docker-load-k3d
-    sleep 10        
-    echo "   Traces Observer Service to the Observability Plane for tracing ingestion..."
-    helm install wso2-amp-observability-extension $1/deployments/helm-charts/wso2-amp-observability-extension \
+    # Enable logs collection in the configured logs module
+    echo "Enabling log collection in Observability Plane..."
+    helm upgrade observability-logs-opensearch \
+      oci://ghcr.io/openchoreo/helm-charts/observability-logs-opensearch \
+      --create-namespace \
+      --namespace openchoreo-observability-plane \
+      --version 0.3.8 \
+      --reuse-values \
+      --set fluent-bit.enabled=true
+    echo "✅ OpenSearch Log collection enabled"
+
+    echo "Enabling opensearch based tracing module..."
+    helm upgrade --install observability-traces-opensearch \
+    oci://ghcr.io/openchoreo/helm-charts/observability-tracing-opensearch \
         --create-namespace \
         --namespace openchoreo-observability-plane \
-        --timeout=10m \
-        --set tracesObserver.developmentMode=true
-fi
+        --version 0.3.7 \
+        --set openSearch.enabled=false \
+        --set openSearchSetup.openSearchSecretName="opensearch-admin-credentials" \
+        --set opentelemetry-collector.configMap.existingName="amp-opentelemetry-collector-config"
 
-echo "⏳ Waiting for Observability Plane pods to be ready..."
-# Wait for deployments to be available
-kubectl wait --for=condition=Available deployment --all -n openchoreo-observability-plane --timeout=900s || {
-    echo "⚠️  Some deployments may still be starting (non-fatal)"
+    # Prometheus based metrics module
+    echo "Installing Prometheus based metrics module..."
+    helm upgrade --install observability-metrics-prometheus \
+      oci://ghcr.io/openchoreo/helm-charts/observability-metrics-prometheus \
+      --create-namespace \
+      --namespace openchoreo-observability-plane \
+      --version 0.2.4 \
+      --set adapter.image.tag=0.2.4
+    echo "✅ Prometheus based metrics module installed"
+
+    echo "⏳ Waiting for Observability Plane pods to be ready..."
+    kubectl wait -n openchoreo-observability-plane --for=condition=available --timeout=300s deployment --all
+    echo "✅ OpenChoreo Observability Plane deployments ready"
+
+    # Registering the Observability Plane with the control plane
+    echo "🔗 Registering Observability Plane..."
+    OP_CA_CERT=$(kubectl get secret cluster-agent-tls -n openchoreo-observability-plane -o jsonpath='{.data.ca\.crt}' | base64 -d)
+    register_observability_plane "$OP_CA_CERT" "default" "http://observer.openchoreo.localhost:11080"
+
+    # Verify ObservabilityPlane
+    echo ""
+    echo "🔍 Verifying ObservabilityPlane ..."
+    kubectl get observabilityplane -n default
+    kubectl logs -n openchoreo-observability-plane -l app=cluster-agent --tail=10
+    echo "✅ OpenChoreo Observability Plane ready"
 }
-# Wait for statefulsets to be ready
-kubectl wait --for=jsonpath='{.status.readyReplicas}'=1 statefulset --all -n openchoreo-observability-plane --timeout=900s || {
-    echo "⚠️  Some statefulsets may still be starting (non-fatal)"
-}
-echo "✅ OpenChoreo Observability Plane ready"
+
+# ============================================================================
+# Step 1: Install Control Plane (must complete before Data Plane)
+# ============================================================================
+echo "1️⃣  Control Plane"
+install_control_plane
 echo ""
 
-echo "7️⃣  Configuring observability integration..."
- # Configure DataPlane observer
-if kubectl get dataplane default -n default &>/dev/null; then
-    kubectl patch dataplane default -n default --type merge \
-        -p '{"spec":{"observer":{"url":"http://observer.openchoreo-observability-plane:8080","authentication":{"basicAuth":{"username":"dummy","password":"dummy"}}}}}' \
+# ============================================================================
+# Step 2: Install and Register Data Plane
+# ============================================================================
+echo "2️⃣  Data Plane"
+install_data_plane
+echo ""
+
+
+# ============================================================================
+# Step 3: Install Workflow Plane and Observability Plane IN PARALLEL
+# ============================================================================
+echo ""
+echo "3️⃣  Workflow Plane + Observability Plane (parallel)"
+echo ""
+
+run_parallel_tasks \
+    "Workflow Plane:install_workflow_plane" \
+    "Observability Plane:install_observability_plane" \
+    || exit 1
+
+echo "✅ Both Workflow Plane and Observability Plane installed successfully"
+echo ""
+
+# ============================================================================
+# Step 4: Configure observability integration (requires both planes to be ready)
+# ============================================================================
+echo "4️⃣  Configuring observability integration..."
+# Configure DataPlane observer
+if kubectl get clusterdataplane default -n default &>/dev/null; then
+    kubectl patch clusterdataplane default -n default --type merge -p '{"spec":{"observabilityPlaneRef":{"kind":"ClusterObservabilityPlane","name":"default"}}}' \
         && echo "   ✅ DataPlane observer configured" \
         || echo "   ⚠️  DataPlane observer configuration failed (non-fatal)"
 else
-    echo "   ⚠️  DataPlane resource not found yet (will use default observer)"
+    echo "   ⚠️  DataPlane resource not found yet "
 fi
 
-# Configure BuildPlane observer
-if kubectl get buildplane default -n default &>/dev/null; then
-    kubectl patch buildplane default -n default --type merge \
-        -p '{"spec":{"observer":{"url":"http://observer.openchoreo-observability-plane:8080","authentication":{"basicAuth":{"username":"dummy","password":"dummy"}}}}}' \
-        && echo "   ✅ BuildPlane observer configured" \
-        || echo "   ⚠️  BuildPlane observer configuration failed (non-fatal)"
+# Configure WorkflowPlane observer
+if kubectl get clusterworkflowplane default -n default &>/dev/null; then
+    kubectl patch clusterworkflowplane default -n default --type merge -p '{"spec":{"observabilityPlaneRef":{"kind":"ClusterObservabilityPlane","name":"default"}}}' \
+        && echo "   ✅ WorkflowPlane observer configured" \
+        || echo "   ⚠️  WorkflowPlane observer configuration failed (non-fatal)"
 else
-    echo "   ⚠️  BuildPlane resource not found yet (will use default observer)"
+    echo "   ⚠️  WorkflowPlane resource not found yet"
 fi
 echo ""
 
+echo "All core OpenChoreo planes are installed and registered!"
+
 
 # ============================================================================
-# VERIFICATION
+# Step 5: Install AMP Extensions IN PARALLEL
+# ============================================================================
+# Pre-update helm dependencies (must run before parallel installs)
+echo ""
+echo "5️⃣  AMP Extensions (parallel)"
+echo "   Updating Helm dependencies..."
+helm dependency update "${SCRIPT_DIR}/../helm-charts/wso2-amp-thunder-extension"
+echo "✅ Helm dependencies updated"
+echo ""
+
+# Define installation functions for parallel execution
+install_thunder_extension() {
+    echo "📦 Installing/Upgrading WSO2 AMP Thunder Extension..."
+    helm upgrade --install amp-thunder-extension "${SCRIPT_DIR}/../helm-charts/wso2-amp-thunder-extension" \
+        --namespace amp-thunder --create-namespace
+    echo "✅ AMP Thunder Extension installed/upgraded successfully"
+}
+
+install_evaluation_workflows() {
+    echo "📦 Installing/Upgrading Evaluation Workflows Extension..."
+    helm upgrade --install amp-evaluation-workflows-extension "${SCRIPT_DIR}/../helm-charts/wso2-amp-evaluation-extension" \
+        --namespace openchoreo-workflow-plane \
+        --set ampEvaluation.image.repository="amp-evaluation-monitor" \
+        --set ampEvaluation.publisher.endpoint="http://agent-manager-service:8080" \
+        --set ampEvaluation.publisher.idpTokenUrl="http://amp-thunder-extension-service.amp-thunder.svc.cluster.local:8090/oauth2/token" \
+        --set ampEvaluation.publisher.clientId="amp-publisher-client"
+    echo "✅ Evaluation Workflows Extension installed/upgraded successfully"
+}
+
+install_platform_resources() {
+    echo "📦 Installing/Upgrading Default Platform Resources..."
+    echo "   Creating default Organization, Project, Environment, and DeploymentPipeline..."
+    helm upgrade --install amp-default-platform-resources "${SCRIPT_DIR}/../helm-charts/wso2-amp-platform-resources-extension" \
+        --namespace default
+    echo "✅ Default Platform Resources installed/upgraded successfully"
+}
+
+echo "🚀 Starting PARALLEL installation of AMP extensions..."
+echo ""
+
+run_parallel_tasks \
+    "Thunder Extension:install_thunder_extension" \
+    "Evaluation Workflows:install_evaluation_workflows" \
+    "Platform Resources:install_platform_resources" \
+    || exit 1
+
+echo "✅ All AMP extensions installed successfully"
+echo ""
+
+# ============================================================================
+# Step 6: Install Observability Extension (Traces Observer Service)
+# ============================================================================
+echo "6️⃣  Observability Extension (Traces Observer Service)"
+if ! helm status wso2-amp-observability-extension -n openchoreo-observability-plane &>/dev/null; then
+    echo "Building and loading Traces Observer Service Docker image into k3d cluster..."
+    make -C ${PROJECT_ROOT}/traces-observer-service docker-load-k3d
+    sleep 10
+fi
+echo "   Installing/upgrading Traces Observer (local dev: JWKS disabled, unverified JWT parse)..."
+helm upgrade --install wso2-amp-observability-extension ${PROJECT_ROOT}/deployments/helm-charts/wso2-amp-observability-extension \
+    --create-namespace \
+    --namespace openchoreo-observability-plane \
+    --timeout=10m \
+    --set tracesObserver.developmentMode=true \
+    --set tracesObserver.auth.isLocalDevEnv=true \
+    --set-string tracesObserver.auth.jwksUrl=""
+echo ""
+
+# ============================================================================
+# Step 7: Install Gateway Operator
+# ============================================================================
+echo "7️⃣  Gateway Operator"
+if helm status gateway-operator -n openchoreo-data-plane &>/dev/null; then
+    echo "⏭️  Gateway Operator already installed, skipping..."
+else
+    helm install gateway-operator oci://ghcr.io/wso2/api-platform/helm-charts/gateway-operator \
+        --version "${GATEWAY_OPERATOR_VERSION}" \
+        --namespace openchoreo-data-plane \
+        --create-namespace \
+        --set logging.level=debug \
+        --set gatewayApi.installStandardCRDs=false \
+        --set "gateway.helm.chartVersion=${GATEWAY_CHART_VERSION}"
+    echo "✅ Gateway Operator installed successfully"
+fi
+echo ""
+
+# ============================================================================
+# Step 8: Apply Gateway Operator Configuration
+# ============================================================================
+echo "8️⃣  Gateway Operator Configuration"
+# Create local config from template for development
+echo "   Creating local development config..."
+cp "${SCRIPT_DIR}/../values/api-platform-operator-full-config.yaml" "${SCRIPT_DIR}/../values/api-platform-operator-local-config.yaml"
+# Update JWKS URI for local development
+config_file="${SCRIPT_DIR}/../values/api-platform-operator-local-config.yaml"
+source_uri='http://amp-api.wso2-amp.svc.cluster.local:9000/auth/external/jwks.json'
+target_uri='http://host.docker.internal:9000/auth/external/jwks.json'
+
+if sed --version >/dev/null 2>&1; then
+  sed -i "s|${source_uri}|${target_uri}|g" "$config_file"
+else
+  sed -i '' "s|${source_uri}|${target_uri}|g" "$config_file"
+fi
+
+grep -q "$target_uri" "$config_file" || {
+  echo "Failed to rewrite JWKS URI in $config_file"
+  exit 1
+}
+kubectl apply -f "${SCRIPT_DIR}/../values/api-platform-operator-local-config.yaml"
+echo "✅ Gateway configuration applied"
+echo ""
+
+echo " 🔑 Grant RBAC for WSO2 API Platform CRDs"
+
+kubectl apply -f - <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: wso2-api-platform-gateway-module
+rules:
+  - apiGroups: ["gateway.api-platform.wso2.com"]
+    resources: ["restapis", "apigateways"]
+    verbs: ["*"]
+  - apiGroups: ["gateway.kgateway.dev"]
+    resources: ["backends"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: wso2-api-platform-gateway-module
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: wso2-api-platform-gateway-module
+subjects:
+  - kind: ServiceAccount
+    name: cluster-agent-dataplane
+    namespace: openchoreo-data-plane
+EOF
+echo "✅ RBAC for WSO2 API Platform CRDs applied"
+echo ""
+
+# ============================================================================
+# Step 9: Apply Gateway and API Resources
+# ============================================================================
+echo "9️⃣  Gateway and API Resources"
+kubectl apply -f "${SCRIPT_DIR}/../values/obs-gateway.yaml"
+
+echo "⏳ Waiting for Gateway to be ready..."
+if kubectl wait --for=condition=Programmed apigateway/obs-gateway -n openchoreo-data-plane --timeout=180s; then
+    echo "✅ Gateway is programmed"
+else
+    echo "⚠️  Gateway did not become ready in time"
+fi
+
+echo ""
+echo "Gateway status:"
+kubectl get apigateway obs-gateway -n openchoreo-data-plane -o yaml
+echo ""
+
+
+kubectl apply -f "${SCRIPT_DIR}/../values/otel-collector-rest-api.yaml"
+
+echo "⏳ Waiting for RestApi to be programmed..."
+if kubectl wait --for=condition=Programmed restapi/traces-api-secure -n openchoreo-data-plane --timeout=120s; then
+    echo "✅ RestApi is programmed"
+else
+    echo "⚠️  RestApi did not become ready in time"
+fi
+echo "✅ Gateway and API resources applied"
+echo ""
+
+# ============================================================================
+# VERIFICATION - Wait for remaining components to be ready
 # ============================================================================
 
-echo "🔍 Verifying installation..."
+echo ""
+echo "🔍 Final Verification - Waiting for remaining components..."
 echo ""
 
-echo "Verify Plane Resources:"
-kubectl get dataplane,buildplane -A
-echo ""
+wait_for_namespace_ready amp-thunder 'Thunder Extension'
 
-echo "=== DataPlane Agent Status ==="
-kubectl get pods -n openchoreo-data-plane -l app=cluster-agent
 echo ""
-
-echo "=== DataPlane Agent Connection Logs ==="
-kubectl logs -n openchoreo-data-plane -l app=cluster-agent --tail=5 2>/dev/null | grep "connected to control plane" || echo "   (No connection logs found or agent not ready)"
+echo "📊 Final Pod Status:"
 echo ""
-
-echo "=== BuildPlane Agent Status ==="
-kubectl get pods -n openchoreo-build-plane -l app=cluster-agent
-echo ""
-
-echo "=== BuildPlane Agent Connection Logs ==="
-kubectl logs -n openchoreo-build-plane -l app=cluster-agent --tail=5 2>/dev/null | grep "connected to control plane" || echo "   (No connection logs found or agent not ready)"
-echo ""
-
-echo "=== Gateway Registration ==="
-kubectl logs -n openchoreo-control-plane -l app=cluster-gateway --tail=20 2>/dev/null | grep "agent registered" | tail -5 || echo "   (No registration logs found or gateway not ready)"
-echo ""
-
-echo "Verify All Resources:"
+echo "--- Control Plane ---"
 kubectl get pods -n openchoreo-control-plane
 echo ""
-
+echo "--- Data Plane ---"
 kubectl get pods -n openchoreo-data-plane
 echo ""
-
-kubectl get pods -n openchoreo-build-plane
+echo "--- Workflow Plane ---"
+kubectl get pods -n openchoreo-workflow-plane
 echo ""
-
+echo "--- Observability Plane ---"
 kubectl get pods -n openchoreo-observability-plane
+echo ""
+echo "--- Thunder Extension ---"
+kubectl get pods -n amp-thunder
 echo ""
 
 echo "✅ OpenChoreo installation complete!"

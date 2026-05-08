@@ -1,0 +1,1018 @@
+{{- $scheme := ternary "http" "https" .Values.thunder.configuration.server.httpOnly }}
+{{- $port := .Values.thunder.configuration.server.port }}
+{{- $thunderUrl := printf "%s://localhost:%d" $scheme (int $port) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: amp-thunder-bootstrap
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/component: thunder-bootstrap
+  annotations:
+    "helm.sh/hook": pre-install
+    "helm.sh/hook-weight": "-10"
+data:
+  50-amp-api-client.sh: |
+    #!/bin/bash
+    set -e
+
+    SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]:-$0}")"
+    source "${SCRIPT_DIR}/common.sh"
+
+    log_info "Checking if application '{{ .Values.thunder.bootstrap.ampApiClient.name }}' already exists..."
+
+    # Get the default OU ID
+    RESPONSE=$(thunder_api_call GET "/organization-units/tree/default")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch default organization unit (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+    DEFAULT_OU_ID=$(echo "$BODY" | grep -o '"handle":"default"[^}]*"id":"[^"]*"\|"id":"[^"]*"[^}]*"handle":"default"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+    if [[ -z "$DEFAULT_OU_ID" ]]; then
+      log_error "Could not extract default organization unit ID from response"
+      echo "Response: $BODY"
+      exit 1
+    fi
+    log_info "Using OU ID: $DEFAULT_OU_ID"
+
+    # Look up the default auth flow ID
+    RESPONSE=$(thunder_api_call GET "/flows?flowType=AUTHENTICATION&limit=200")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch authentication flows (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+    AUTH_FLOW_ID=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep '"handle":"default-basic-flow"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+    if [[ -z "$AUTH_FLOW_ID" ]]; then
+      log_error "Could not find default-basic-flow authentication flow"
+      exit 1
+    fi
+    log_info "Using auth flow ID: $AUTH_FLOW_ID"
+
+    # Check if app already exists
+    RESPONSE=$(thunder_api_call GET "/applications")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch applications (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+
+    APP_PAYLOAD='{
+      "name": "{{ .Values.thunder.bootstrap.ampApiClient.name }}",
+      "description": "{{ .Values.thunder.bootstrap.ampApiClient.description }}",
+      "ouId": "'${DEFAULT_OU_ID}'",
+      "authFlowId": "'${AUTH_FLOW_ID}'",
+      "inboundAuthConfig": [
+        {
+          "type": "oauth2",
+          "config": {
+            "clientId": "{{ .Values.thunder.bootstrap.ampApiClient.clientId }}",
+            "clientSecret": "{{ .Values.thunder.bootstrap.ampApiClient.clientSecret }}",
+            "grantTypes": {{ .Values.thunder.bootstrap.ampApiClient.grantTypes | toJson }},
+            "tokenEndpointAuthMethod": "{{ .Values.thunder.bootstrap.ampApiClient.tokenEndpointAuthMethod }}",
+            "pkceRequired": {{ .Values.thunder.bootstrap.ampApiClient.pkceRequired }},
+            "publicClient": {{ .Values.thunder.bootstrap.ampApiClient.publicClient }},
+            "token": {
+              "accessToken": {
+                "validityPeriod": {{ .Values.thunder.bootstrap.ampApiClient.accessTokenValidityPeriod }}
+              }
+            }
+          }
+        }
+      ]
+    }'
+
+    if echo "$BODY" | grep -q '"clientId":"{{ .Values.thunder.bootstrap.ampApiClient.clientId }}"'; then
+      app_id=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep '"clientId":"{{ .Values.thunder.bootstrap.ampApiClient.clientId }}"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+      log_info "Application '{{ .Values.thunder.bootstrap.ampApiClient.name }}' already exists (id: $app_id), updating..."
+      RESPONSE=$(thunder_api_call PUT "/applications/$app_id" "$APP_PAYLOAD")
+      HTTP_CODE="${RESPONSE: -3}"
+      if [[ "$HTTP_CODE" == "200" ]]; then
+        log_info "Application '{{ .Values.thunder.bootstrap.ampApiClient.name }}' updated successfully"
+      else
+        log_error "Failed to update application (HTTP $HTTP_CODE)"
+        echo "Response: ${RESPONSE%???}"
+        exit 1
+      fi
+    else
+      log_info "Application '{{ .Values.thunder.bootstrap.ampApiClient.name }}' does not exist, creating..."
+      RESPONSE=$(thunder_api_call POST "/applications" "$APP_PAYLOAD")
+      HTTP_CODE="${RESPONSE: -3}"
+      if [[ "$HTTP_CODE" == "201" ]] || [[ "$HTTP_CODE" == "200" ]]; then
+        log_info "Application '{{ .Values.thunder.bootstrap.ampApiClient.name }}' created successfully"
+      elif [[ "$HTTP_CODE" == "409" ]]; then
+        log_info "Application '{{ .Values.thunder.bootstrap.ampApiClient.name }}' already exists, skipping"
+      else
+        log_error "Failed to create application (HTTP $HTTP_CODE)"
+        echo "Response: ${RESPONSE%???}"
+        exit 1
+      fi
+    fi
+
+  51-user-schema-and-users.sh: |
+    #!/bin/bash
+    set -e
+
+    SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]:-$0}")"
+    source "${SCRIPT_DIR}/common.sh"
+
+    # Get the default OU ID
+    RESPONSE=$(thunder_api_call GET "/organization-units/tree/default")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch default organization unit (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+    DEFAULT_OU_ID=$(echo "$BODY" | grep -o '"handle":"default"[^}]*"id":"[^"]*"\|"id":"[^"]*"[^}]*"handle":"default"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+    if [[ -z "$DEFAULT_OU_ID" ]]; then
+      log_error "Could not extract default organization unit ID from response"
+      echo "Response: $BODY"
+      exit 1
+    fi
+    log_info "Using organization unit ID: $DEFAULT_OU_ID"
+
+    log_info "Checking if user schema '{{ .Values.thunder.bootstrap.userSchema.name }}' already exists..."
+    RESPONSE=$(thunder_api_call GET "/user-schemas")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch user schemas (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+
+    if echo "$BODY" | grep -q '"name":"{{ .Values.thunder.bootstrap.userSchema.name }}"'; then
+      log_info "User schema '{{ .Values.thunder.bootstrap.userSchema.name }}' already exists, skipping creation"
+    else
+      log_info "User schema does not exist, creating user schema '{{ .Values.thunder.bootstrap.userSchema.name }}'..."
+      RESPONSE=$(thunder_api_call POST "/user-schemas" "{
+        \"name\": \"{{ .Values.thunder.bootstrap.userSchema.name }}\",
+        \"ouId\": \"$DEFAULT_OU_ID\",
+        \"allowSelfRegistration\": {{ .Values.thunder.bootstrap.userSchema.allowSelfRegistration }},
+        \"schema\": {
+          \"username\": {
+            \"type\": \"string\",
+            \"displayName\": \"Username\",
+            \"required\": true,
+            \"unique\": true
+          },
+          \"password\": {
+            \"type\": \"string\",
+            \"displayName\": \"Password\",
+            \"required\": true,
+            \"credential\": true
+          },
+          \"given_name\": {
+            \"type\": \"string\",
+            \"displayName\": \"First Name\"
+          },
+          \"family_name\": {
+            \"type\": \"string\",
+            \"displayName\": \"Last Name\"
+          },
+          \"groups\": {
+            \"type\": \"array\",
+            \"displayName\": \"Groups\",
+            \"items\": {\"type\": \"string\"}
+          }
+        },
+        \"systemAttributes\": {
+          \"display\": \"username\"
+        }
+      }")
+
+      HTTP_CODE="${RESPONSE: -3}"
+      if [[ "$HTTP_CODE" == "201" ]] || [[ "$HTTP_CODE" == "200" ]]; then
+        log_info "User schema created successfully"
+      elif [[ "$HTTP_CODE" == "409" ]]; then
+        log_info "User schema already exists, skipping"
+      else
+        log_error "Failed to create user schema (HTTP $HTTP_CODE)"
+        echo "Response: ${RESPONSE%???}"
+        exit 1
+      fi
+    fi
+
+    # Create default users
+    {{- if .Values.thunder.bootstrap.defaultUsers }}
+    {{- range .Values.thunder.bootstrap.defaultUsers }}
+    log_info "Checking if user '{{ .username }}' already exists..."
+    RESPONSE=$(thunder_api_call GET "/users")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch users (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+
+    if echo "$BODY" | grep -q '"username":"{{ .username }}"'; then
+      log_info "User '{{ .username }}' already exists, skipping creation"
+    else
+      log_info "User does not exist, creating user '{{ .username }}'..."
+      RESPONSE=$(thunder_api_call POST "/users" "{
+        \"type\": \"{{ $.Values.thunder.bootstrap.userSchema.name }}\",
+        \"ouId\": \"$DEFAULT_OU_ID\",
+        \"attributes\": {
+          \"username\": \"{{ .username }}\",
+          \"password\": \"{{ .password }}\",
+          \"given_name\": \"{{ .givenName }}\",
+          \"family_name\": \"{{ .familyName }}\",
+          \"groups\": {{ .groups | toJson | replace "\"" "\\\"" }}
+        }
+      }")
+
+      HTTP_CODE="${RESPONSE: -3}"
+      if [[ "$HTTP_CODE" == "201" ]] || [[ "$HTTP_CODE" == "200" ]]; then
+        log_info "User '{{ .username }}' created successfully"
+      elif [[ "$HTTP_CODE" == "409" ]]; then
+        log_info "User '{{ .username }}' already exists, skipping"
+      else
+        log_error "Failed to create user (HTTP $HTTP_CODE)"
+        echo "Response: ${RESPONSE%???}"
+        exit 1
+      fi
+    fi
+    {{- end }}
+    {{- end }}
+
+  52-amp-console-app.sh: |
+    #!/bin/bash
+    set -e
+
+    SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]:-$0}")"
+    source "${SCRIPT_DIR}/common.sh"
+
+    log_info "Checking if application '{{ .Values.thunder.bootstrap.ampConsoleClient.name }}' already exists..."
+
+    # Get the default OU ID
+    RESPONSE=$(thunder_api_call GET "/organization-units/tree/default")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch default organization unit (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+    DEFAULT_OU_ID=$(echo "$BODY" | grep -o '"handle":"default"[^}]*"id":"[^"]*"\|"id":"[^"]*"[^}]*"handle":"default"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+    if [[ -z "$DEFAULT_OU_ID" ]]; then
+      log_error "Could not extract default organization unit ID from response"
+      echo "Response: $BODY"
+      exit 1
+    fi
+    log_info "Using OU ID: $DEFAULT_OU_ID"
+
+    # Look up the default auth flow ID
+    RESPONSE=$(thunder_api_call GET "/flows?flowType=AUTHENTICATION&limit=200")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch authentication flows (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+    AUTH_FLOW_ID=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep '"handle":"default-basic-flow"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+    if [[ -z "$AUTH_FLOW_ID" ]]; then
+      log_error "Could not find default-basic-flow authentication flow"
+      exit 1
+    fi
+    log_info "Using auth flow ID: $AUTH_FLOW_ID"
+
+    # Check existing apps
+    RESPONSE=$(thunder_api_call GET "/applications")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch applications (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+
+    APP_PAYLOAD='{
+      "name": "{{ .Values.thunder.bootstrap.ampConsoleClient.name }}",
+      "description": "{{ .Values.thunder.bootstrap.ampConsoleClient.description }}",
+      "ouId": "'${DEFAULT_OU_ID}'",
+      "authFlowId": "'${AUTH_FLOW_ID}'",
+      "allowedUserTypes": {{ .Values.thunder.bootstrap.ampConsoleClient.allowedUserTypes | toJson }},
+      "inboundAuthConfig": [
+        {
+          "type": "oauth2",
+          "config": {
+            "clientId": "{{ .Values.thunder.bootstrap.ampConsoleClient.clientId }}",
+            "redirectUris": {{ .Values.thunder.bootstrap.ampConsoleClient.redirectUris | toJson }},
+            "grantTypes": {{ .Values.thunder.bootstrap.ampConsoleClient.grantTypes | toJson }},
+            "responseTypes": {{ .Values.thunder.bootstrap.ampConsoleClient.responseTypes | toJson }},
+            "tokenEndpointAuthMethod": "{{ .Values.thunder.bootstrap.ampConsoleClient.tokenEndpointAuthMethod }}",
+            "pkceRequired": {{ .Values.thunder.bootstrap.ampConsoleClient.pkceRequired }},
+            "publicClient": {{ .Values.thunder.bootstrap.ampConsoleClient.publicClient }},
+            "token": {
+              "accessToken": {
+                "validityPeriod": {{ .Values.thunder.bootstrap.ampConsoleClient.accessTokenValidityPeriod }},
+                "userAttributes": {{ .Values.thunder.bootstrap.ampConsoleClient.userAttributes | toJson }}
+              },
+              "idToken": {
+                "validityPeriod": {{ .Values.thunder.bootstrap.ampConsoleClient.idTokenValidityPeriod }},
+                "userAttributes": {{ .Values.thunder.bootstrap.ampConsoleClient.userAttributes | toJson }}
+              }
+            }
+          }
+        }
+      ]
+    }'
+
+    if echo "$BODY" | grep -q '"clientId":"{{ .Values.thunder.bootstrap.ampConsoleClient.clientId }}"'; then
+      app_id=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep '"clientId":"{{ .Values.thunder.bootstrap.ampConsoleClient.clientId }}"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+      log_info "Application '{{ .Values.thunder.bootstrap.ampConsoleClient.name }}' already exists (id: $app_id), updating..."
+      RESPONSE=$(thunder_api_call PUT "/applications/$app_id" "$APP_PAYLOAD")
+      HTTP_CODE="${RESPONSE: -3}"
+      if [[ "$HTTP_CODE" == "200" ]]; then
+        log_info "Application '{{ .Values.thunder.bootstrap.ampConsoleClient.name }}' updated successfully"
+      else
+        log_error "Failed to update application (HTTP $HTTP_CODE)"
+        echo "Response: ${RESPONSE%???}"
+        exit 1
+      fi
+    else
+      log_info "Application '{{ .Values.thunder.bootstrap.ampConsoleClient.name }}' does not exist, creating..."
+      RESPONSE=$(thunder_api_call POST "/applications" "$APP_PAYLOAD")
+      HTTP_CODE="${RESPONSE: -3}"
+      if [[ "$HTTP_CODE" == "201" ]] || [[ "$HTTP_CODE" == "200" ]]; then
+        log_info "Application '{{ .Values.thunder.bootstrap.ampConsoleClient.name }}' created successfully"
+      elif [[ "$HTTP_CODE" == "409" ]]; then
+        log_info "Application '{{ .Values.thunder.bootstrap.ampConsoleClient.name }}' already exists, skipping"
+      else
+        log_error "Failed to create application (HTTP $HTTP_CODE)"
+        echo "Response: ${RESPONSE%???}"
+        exit 1
+      fi
+    fi
+
+  53-workload-publisher-app.sh: |
+    #!/bin/bash
+    set -e
+
+    SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]:-$0}")"
+    source "${SCRIPT_DIR}/common.sh"
+
+    log_info "Checking if application '{{ .Values.thunder.bootstrap.workloadPublisherClient.name }}' already exists..."
+
+    # Get the default OU ID
+    RESPONSE=$(thunder_api_call GET "/organization-units/tree/default")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch default organization unit (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+    DEFAULT_OU_ID=$(echo "$BODY" | grep -o '"handle":"default"[^}]*"id":"[^"]*"\|"id":"[^"]*"[^}]*"handle":"default"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+    if [[ -z "$DEFAULT_OU_ID" ]]; then
+      log_error "Could not extract default organization unit ID from response"
+      echo "Response: $BODY"
+      exit 1
+    fi
+
+    # Check existing apps
+    RESPONSE=$(thunder_api_call GET "/applications")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch applications (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+
+    APP_PAYLOAD='{
+      "name": "{{ .Values.thunder.bootstrap.workloadPublisherClient.name }}",
+      "description": "{{ .Values.thunder.bootstrap.workloadPublisherClient.description }}",
+      "ouId": "'${DEFAULT_OU_ID}'",
+      "inboundAuthConfig": [
+        {
+          "type": "oauth2",
+          "config": {
+            "clientId": "{{ .Values.thunder.bootstrap.workloadPublisherClient.clientId }}",
+            "clientSecret": "{{ .Values.thunder.bootstrap.workloadPublisherClient.clientSecret }}",
+            "grantTypes": {{ .Values.thunder.bootstrap.workloadPublisherClient.grantTypes | toJson }},
+            "tokenEndpointAuthMethod": "{{ .Values.thunder.bootstrap.workloadPublisherClient.tokenEndpointAuthMethod }}",
+            "pkceRequired": {{ .Values.thunder.bootstrap.workloadPublisherClient.pkceRequired }},
+            "publicClient": {{ .Values.thunder.bootstrap.workloadPublisherClient.publicClient }},
+            "token": {
+              "accessToken": {
+                "validityPeriod": {{ .Values.thunder.bootstrap.workloadPublisherClient.accessTokenValidityPeriod }}
+              }
+            }
+          }
+        }
+      ]
+    }'
+
+    if echo "$BODY" | grep -q '"clientId":"{{ .Values.thunder.bootstrap.workloadPublisherClient.clientId }}"'; then
+      app_id=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep '"clientId":"{{ .Values.thunder.bootstrap.workloadPublisherClient.clientId }}"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+      log_info "Application '{{ .Values.thunder.bootstrap.workloadPublisherClient.name }}' already exists (id: $app_id), updating..."
+      RESPONSE=$(thunder_api_call PUT "/applications/$app_id" "$APP_PAYLOAD")
+      HTTP_CODE="${RESPONSE: -3}"
+      if [[ "$HTTP_CODE" == "200" ]]; then
+        log_info "Application '{{ .Values.thunder.bootstrap.workloadPublisherClient.name }}' updated successfully"
+      else
+        log_error "Failed to update application (HTTP $HTTP_CODE)"
+        echo "Response: ${RESPONSE%???}"
+        exit 1
+      fi
+    else
+      log_info "Application '{{ .Values.thunder.bootstrap.workloadPublisherClient.name }}' does not exist, creating..."
+      RESPONSE=$(thunder_api_call POST "/applications" "$APP_PAYLOAD")
+      HTTP_CODE="${RESPONSE: -3}"
+      if [[ "$HTTP_CODE" == "201" ]] || [[ "$HTTP_CODE" == "200" ]]; then
+        log_info "Application '{{ .Values.thunder.bootstrap.workloadPublisherClient.name }}' created successfully"
+      elif [[ "$HTTP_CODE" == "409" ]]; then
+        log_info "Application '{{ .Values.thunder.bootstrap.workloadPublisherClient.name }}' already exists, skipping"
+      else
+        log_error "Failed to create application (HTTP $HTTP_CODE)"
+        echo "Response: ${RESPONSE%???}"
+        exit 1
+      fi
+    fi
+
+  54-observer-resource-reader-app.sh: |
+    #!/bin/bash
+    set -e
+
+    SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]:-$0}")"
+    source "${SCRIPT_DIR}/common.sh"
+
+    log_info "Checking if application '{{ .Values.thunder.bootstrap.observerResourceReaderClient.name }}' already exists..."
+
+    # Get the default OU ID
+    RESPONSE=$(thunder_api_call GET "/organization-units/tree/default")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch default organization unit (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+    DEFAULT_OU_ID=$(echo "$BODY" | grep -o '"handle":"default"[^}]*"id":"[^"]*"\|"id":"[^"]*"[^}]*"handle":"default"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+    if [[ -z "$DEFAULT_OU_ID" ]]; then
+      log_error "Could not extract default organization unit ID from response"
+      echo "Response: $BODY"
+      exit 1
+    fi
+
+    # Check existing apps
+    RESPONSE=$(thunder_api_call GET "/applications")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch applications (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+
+    APP_PAYLOAD='{
+      "name": "{{ .Values.thunder.bootstrap.observerResourceReaderClient.name }}",
+      "description": "{{ .Values.thunder.bootstrap.observerResourceReaderClient.description }}",
+      "ouId": "'${DEFAULT_OU_ID}'",
+      "inboundAuthConfig": [
+        {
+          "type": "oauth2",
+          "config": {
+            "clientId": "{{ .Values.thunder.bootstrap.observerResourceReaderClient.clientId }}",
+            "clientSecret": "{{ .Values.thunder.bootstrap.observerResourceReaderClient.clientSecret }}",
+            "grantTypes": {{ .Values.thunder.bootstrap.observerResourceReaderClient.grantTypes | toJson }},
+            "tokenEndpointAuthMethod": "{{ .Values.thunder.bootstrap.observerResourceReaderClient.tokenEndpointAuthMethod }}",
+            "pkceRequired": {{ .Values.thunder.bootstrap.observerResourceReaderClient.pkceRequired }},
+            "publicClient": {{ .Values.thunder.bootstrap.observerResourceReaderClient.publicClient }},
+            "token": {
+              "accessToken": {
+                "validityPeriod": {{ .Values.thunder.bootstrap.observerResourceReaderClient.accessTokenValidityPeriod }}
+              }
+            }
+          }
+        }
+      ]
+    }'
+
+    if echo "$BODY" | grep -q '"clientId":"{{ .Values.thunder.bootstrap.observerResourceReaderClient.clientId }}"'; then
+      app_id=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep '"clientId":"{{ .Values.thunder.bootstrap.observerResourceReaderClient.clientId }}"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+      log_info "Application '{{ .Values.thunder.bootstrap.observerResourceReaderClient.name }}' already exists (id: $app_id), updating..."
+      RESPONSE=$(thunder_api_call PUT "/applications/$app_id" "$APP_PAYLOAD")
+      HTTP_CODE="${RESPONSE: -3}"
+      if [[ "$HTTP_CODE" == "200" ]]; then
+        log_info "Application '{{ .Values.thunder.bootstrap.observerResourceReaderClient.name }}' updated successfully"
+      else
+        log_error "Failed to update application (HTTP $HTTP_CODE)"
+        echo "Response: ${RESPONSE%???}"
+        exit 1
+      fi
+    else
+      log_info "Application '{{ .Values.thunder.bootstrap.observerResourceReaderClient.name }}' does not exist, creating..."
+      RESPONSE=$(thunder_api_call POST "/applications" "$APP_PAYLOAD")
+      HTTP_CODE="${RESPONSE: -3}"
+      if [[ "$HTTP_CODE" == "201" ]] || [[ "$HTTP_CODE" == "200" ]]; then
+        log_info "Application '{{ .Values.thunder.bootstrap.observerResourceReaderClient.name }}' created successfully"
+      elif [[ "$HTTP_CODE" == "409" ]]; then
+        log_info "Application '{{ .Values.thunder.bootstrap.observerResourceReaderClient.name }}' already exists, skipping"
+      else
+        log_error "Failed to create application (HTTP $HTTP_CODE)"
+        echo "Response: ${RESPONSE%???}"
+        exit 1
+      fi
+    fi
+
+  55-amp-publisher-client.sh: |
+    #!/bin/bash
+    set -e
+
+    SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]:-$0}")"
+    source "${SCRIPT_DIR}/common.sh"
+
+    log_info "Checking if application '{{ .Values.thunder.bootstrap.ampPublisherClient.name }}' already exists..."
+
+    # Get the default OU ID
+    RESPONSE=$(thunder_api_call GET "/organization-units/tree/default")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch default organization unit (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+    DEFAULT_OU_ID=$(echo "$BODY" | grep -o '"handle":"default"[^}]*"id":"[^"]*"\|"id":"[^"]*"[^}]*"handle":"default"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+    if [[ -z "$DEFAULT_OU_ID" ]]; then
+      log_error "Could not extract default organization unit ID from response"
+      echo "Response: $BODY"
+      exit 1
+    fi
+
+    # Look up the default auth flow ID
+    RESPONSE=$(thunder_api_call GET "/flows?flowType=AUTHENTICATION&limit=200")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch authentication flows (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+    AUTH_FLOW_ID=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep '"handle":"default-basic-flow"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+    if [[ -z "$AUTH_FLOW_ID" ]]; then
+      log_error "Could not find default-basic-flow authentication flow"
+      exit 1
+    fi
+    log_info "Using auth flow ID: $AUTH_FLOW_ID"
+
+    # Check existing apps
+    RESPONSE=$(thunder_api_call GET "/applications")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch applications (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+
+    APP_PAYLOAD='{
+      "name": "{{ .Values.thunder.bootstrap.ampPublisherClient.name }}",
+      "description": "{{ .Values.thunder.bootstrap.ampPublisherClient.description }}",
+      "ouId": "'${DEFAULT_OU_ID}'",
+      "authFlowId": "'${AUTH_FLOW_ID}'",
+      "inboundAuthConfig": [
+        {
+          "type": "oauth2",
+          "config": {
+            "clientId": "{{ .Values.thunder.bootstrap.ampPublisherClient.clientId }}",
+            "clientSecret": "{{ .Values.thunder.bootstrap.ampPublisherClient.clientSecret }}",
+            "grantTypes": {{ .Values.thunder.bootstrap.ampPublisherClient.grantTypes | toJson }},
+            "tokenEndpointAuthMethod": "{{ .Values.thunder.bootstrap.ampPublisherClient.tokenEndpointAuthMethod }}",
+            "pkceRequired": {{ .Values.thunder.bootstrap.ampPublisherClient.pkceRequired }},
+            "publicClient": {{ .Values.thunder.bootstrap.ampPublisherClient.publicClient }},
+            "token": {
+              "accessToken": {
+                "validityPeriod": {{ .Values.thunder.bootstrap.ampPublisherClient.accessTokenValidityPeriod }}
+              }
+            }
+          }
+        }
+      ]
+    }'
+
+    if echo "$BODY" | grep -q '"clientId":"{{ .Values.thunder.bootstrap.ampPublisherClient.clientId }}"'; then
+      app_id=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep '"clientId":"{{ .Values.thunder.bootstrap.ampPublisherClient.clientId }}"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+      log_info "Application '{{ .Values.thunder.bootstrap.ampPublisherClient.name }}' already exists (id: $app_id), updating..."
+      RESPONSE=$(thunder_api_call PUT "/applications/$app_id" "$APP_PAYLOAD")
+      HTTP_CODE="${RESPONSE: -3}"
+      if [[ "$HTTP_CODE" == "200" ]]; then
+        log_info "Application '{{ .Values.thunder.bootstrap.ampPublisherClient.name }}' updated successfully"
+      else
+        log_error "Failed to update application (HTTP $HTTP_CODE)"
+        echo "Response: ${RESPONSE%???}"
+        exit 1
+      fi
+    else
+      log_info "Application '{{ .Values.thunder.bootstrap.ampPublisherClient.name }}' does not exist, creating..."
+      RESPONSE=$(thunder_api_call POST "/applications" "$APP_PAYLOAD")
+      HTTP_CODE="${RESPONSE: -3}"
+      if [[ "$HTTP_CODE" == "201" ]] || [[ "$HTTP_CODE" == "200" ]]; then
+        log_info "Application '{{ .Values.thunder.bootstrap.ampPublisherClient.name }}' created successfully"
+      elif [[ "$HTTP_CODE" == "409" ]]; then
+        log_info "Application '{{ .Values.thunder.bootstrap.ampPublisherClient.name }}' already exists, skipping"
+      else
+        log_error "Failed to create application (HTTP $HTTP_CODE)"
+        echo "Response: ${RESPONSE%???}"
+        exit 1
+      fi
+    fi
+
+  56-amp-system-client.sh: |
+    #!/bin/bash
+    set -e
+
+    SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]:-$0}")"
+    source "${SCRIPT_DIR}/common.sh"
+
+    log_info "Checking if application '{{ .Values.thunder.bootstrap.ampSystemClient.name }}' already exists..."
+
+    # Get the default OU ID
+    RESPONSE=$(thunder_api_call GET "/organization-units/tree/default")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch default organization unit (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+    DEFAULT_OU_ID=$(echo "$BODY" | grep -o '"handle":"default"[^}]*"id":"[^"]*"\|"id":"[^"]*"[^}]*"handle":"default"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+    if [[ -z "$DEFAULT_OU_ID" ]]; then
+      log_error "Could not extract default organization unit ID from response"
+      echo "Response: $BODY"
+      exit 1
+    fi
+
+    # Look up the default auth flow ID
+    RESPONSE=$(thunder_api_call GET "/flows?flowType=AUTHENTICATION&limit=200")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch authentication flows (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+    AUTH_FLOW_ID=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep '"handle":"default-basic-flow"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+    if [[ -z "$AUTH_FLOW_ID" ]]; then
+      log_error "Could not find default-basic-flow authentication flow"
+      exit 1
+    fi
+    log_info "Using auth flow ID: $AUTH_FLOW_ID"
+
+    # Check existing apps
+    RESPONSE=$(thunder_api_call GET "/applications")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch applications (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+
+    APP_PAYLOAD='{
+      "name": "{{ .Values.thunder.bootstrap.ampSystemClient.name }}",
+      "description": "{{ .Values.thunder.bootstrap.ampSystemClient.description }}",
+      "ouId": "'${DEFAULT_OU_ID}'",
+      "authFlowId": "'${AUTH_FLOW_ID}'",
+      "inboundAuthConfig": [
+        {
+          "type": "oauth2",
+          "config": {
+            "clientId": "{{ .Values.thunder.bootstrap.ampSystemClient.clientId }}",
+            "clientSecret": "{{ .Values.thunder.bootstrap.ampSystemClient.clientSecret }}",
+            "grantTypes": {{ .Values.thunder.bootstrap.ampSystemClient.grantTypes | toJson }},
+            "tokenEndpointAuthMethod": "{{ .Values.thunder.bootstrap.ampSystemClient.tokenEndpointAuthMethod }}",
+            "pkceRequired": {{ .Values.thunder.bootstrap.ampSystemClient.pkceRequired }},
+            "publicClient": {{ .Values.thunder.bootstrap.ampSystemClient.publicClient }},
+            "token": {
+              "accessToken": {
+                "validityPeriod": {{ .Values.thunder.bootstrap.ampSystemClient.accessTokenValidityPeriod }}
+              }
+            }
+          }
+        }
+      ]
+    }'
+
+    SYSTEM_APP_ID=""
+
+    if echo "$BODY" | grep -q '"clientId":"{{ .Values.thunder.bootstrap.ampSystemClient.clientId }}"'; then
+      SYSTEM_APP_ID=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep '"clientId":"{{ .Values.thunder.bootstrap.ampSystemClient.clientId }}"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+      log_info "Application '{{ .Values.thunder.bootstrap.ampSystemClient.name }}' already exists (id: $SYSTEM_APP_ID), updating..."
+      RESPONSE=$(thunder_api_call PUT "/applications/$SYSTEM_APP_ID" "$APP_PAYLOAD")
+      HTTP_CODE="${RESPONSE: -3}"
+      if [[ "$HTTP_CODE" == "200" ]]; then
+        log_info "Application '{{ .Values.thunder.bootstrap.ampSystemClient.name }}' updated successfully"
+      else
+        log_error "Failed to update application (HTTP $HTTP_CODE)"
+        echo "Response: ${RESPONSE%???}"
+        exit 1
+      fi
+    else
+      log_info "Application '{{ .Values.thunder.bootstrap.ampSystemClient.name }}' does not exist, creating..."
+      RESPONSE=$(thunder_api_call POST "/applications" "$APP_PAYLOAD")
+      HTTP_CODE="${RESPONSE: -3}"
+      BODY="${RESPONSE%???}"
+      if [[ "$HTTP_CODE" == "201" ]] || [[ "$HTTP_CODE" == "200" ]]; then
+        SYSTEM_APP_ID=$(echo "$BODY" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+        log_info "Application '{{ .Values.thunder.bootstrap.ampSystemClient.name }}' created successfully (id: $SYSTEM_APP_ID)"
+      elif [[ "$HTTP_CODE" == "409" ]]; then
+        log_info "Application '{{ .Values.thunder.bootstrap.ampSystemClient.name }}' already exists, skipping"
+        # Re-fetch to get the ID
+        RESPONSE=$(thunder_api_call GET "/applications")
+        BODY="${RESPONSE%???}"
+        SYSTEM_APP_ID=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep '"clientId":"{{ .Values.thunder.bootstrap.ampSystemClient.clientId }}"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+      else
+        log_error "Failed to create application (HTTP $HTTP_CODE)"
+        echo "Response: $BODY"
+        exit 1
+      fi
+    fi
+
+    if [[ -z "$SYSTEM_APP_ID" ]]; then
+      log_error "Could not determine system app ID"
+      exit 1
+    fi
+
+    # Assign the system app to the Administrator role so it can get system-scoped tokens
+    log_info "Looking up Administrator role..."
+    RESPONSE=$(thunder_api_call GET "/roles")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch roles (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+
+    ADMIN_ROLE_ID=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep '"name":"Administrator"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+    if [[ -z "$ADMIN_ROLE_ID" ]]; then
+      log_error "Could not find Administrator role"
+      exit 1
+    fi
+    log_info "Found Administrator role (id: $ADMIN_ROLE_ID)"
+
+    log_info "Assigning system app to Administrator role..."
+    ASSIGN_PAYLOAD='{"assignments":[{"id":"'${SYSTEM_APP_ID}'","type":"app"}]}'
+    RESPONSE=$(thunder_api_call POST "/roles/$ADMIN_ROLE_ID/assignments/add" "$ASSIGN_PAYLOAD")
+    HTTP_CODE="${RESPONSE: -3}"
+    if [[ "$HTTP_CODE" == "200" ]] || [[ "$HTTP_CODE" == "201" ]] || [[ "$HTTP_CODE" == "204" ]]; then
+      log_info "System app assigned to Administrator role successfully"
+    elif [[ "$HTTP_CODE" == "409" ]]; then
+      log_info "System app already assigned to Administrator role"
+    else
+      log_error "Failed to assign system app to Administrator role (HTTP $HTTP_CODE)"
+      echo "Response: ${RESPONSE%???}"
+      exit 1
+    fi
+
+
+  57-amctl-client.sh: |
+    #!/bin/bash
+    set -e
+
+    SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]:-$0}")"
+    source "${SCRIPT_DIR}/common.sh"
+
+    log_info "Checking if application '{{ .Values.thunder.bootstrap.amCliClient.name }}' already exists..."
+
+    # Get the default OU ID
+    RESPONSE=$(thunder_api_call GET "/organization-units/tree/default")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch default organization unit (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+    DEFAULT_OU_ID=$(echo "$BODY" | grep -o '"handle":"default"[^}]*"id":"[^"]*"\|"id":"[^"]*"[^}]*"handle":"default"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+    if [[ -z "$DEFAULT_OU_ID" ]]; then
+      log_error "Could not extract default organization unit ID from response"
+      echo "Response: $BODY"
+      exit 1
+    fi
+    log_info "Using OU ID: $DEFAULT_OU_ID"
+
+    # Look up the default auth flow ID
+    RESPONSE=$(thunder_api_call GET "/flows?flowType=AUTHENTICATION&limit=200")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch authentication flows (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+    AUTH_FLOW_ID=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep '"handle":"default-basic-flow"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+    if [[ -z "$AUTH_FLOW_ID" ]]; then
+      log_error "Could not find default-basic-flow authentication flow"
+      exit 1
+    fi
+    log_info "Using auth flow ID: $AUTH_FLOW_ID"
+
+    # Check existing apps
+    RESPONSE=$(thunder_api_call GET "/applications")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch applications (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+
+    APP_PAYLOAD='{
+      "name": "{{ .Values.thunder.bootstrap.amCliClient.name }}",
+      "description": "{{ .Values.thunder.bootstrap.amCliClient.description }}",
+      "ouId": "'${DEFAULT_OU_ID}'",
+      "authFlowId": "'${AUTH_FLOW_ID}'",
+      "allowedUserTypes": {{ .Values.thunder.bootstrap.amCliClient.allowedUserTypes | toJson }},
+      "inboundAuthConfig": [
+        {
+          "type": "oauth2",
+          "config": {
+            "clientId": "{{ .Values.thunder.bootstrap.amCliClient.clientId }}",
+            "redirectUris": {{ .Values.thunder.bootstrap.amCliClient.redirectUris | toJson }},
+            "grantTypes": {{ .Values.thunder.bootstrap.amCliClient.grantTypes | toJson }},
+            "responseTypes": {{ .Values.thunder.bootstrap.amCliClient.responseTypes | toJson }},
+            "tokenEndpointAuthMethod": "{{ .Values.thunder.bootstrap.amCliClient.tokenEndpointAuthMethod }}",
+            "pkceRequired": {{ .Values.thunder.bootstrap.amCliClient.pkceRequired }},
+            "publicClient": {{ .Values.thunder.bootstrap.amCliClient.publicClient }},
+            "token": {
+              "accessToken": {
+                "validityPeriod": {{ .Values.thunder.bootstrap.amCliClient.accessTokenValidityPeriod }},
+                "userAttributes": {{ .Values.thunder.bootstrap.amCliClient.userAttributes | toJson }}
+              },
+              "idToken": {
+                "validityPeriod": {{ .Values.thunder.bootstrap.amCliClient.idTokenValidityPeriod }},
+                "userAttributes": {{ .Values.thunder.bootstrap.amCliClient.userAttributes | toJson }}
+              }
+            }
+          }
+        }
+      ]
+    }'
+
+    if echo "$BODY" | grep -q '"clientId":"{{ .Values.thunder.bootstrap.amCliClient.clientId }}"'; then
+      app_id=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep '"clientId":"{{ .Values.thunder.bootstrap.amCliClient.clientId }}"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+      log_info "Application '{{ .Values.thunder.bootstrap.amCliClient.name }}' already exists (id: $app_id), updating..."
+      RESPONSE=$(thunder_api_call PUT "/applications/$app_id" "$APP_PAYLOAD")
+      HTTP_CODE="${RESPONSE: -3}"
+      if [[ "$HTTP_CODE" == "200" ]]; then
+        log_info "Application '{{ .Values.thunder.bootstrap.amCliClient.name }}' updated successfully"
+      else
+        log_error "Failed to update application (HTTP $HTTP_CODE)"
+        echo "Response: ${RESPONSE%???}"
+        exit 1
+      fi
+    else
+      log_info "Application '{{ .Values.thunder.bootstrap.amCliClient.name }}' does not exist, creating..."
+      RESPONSE=$(thunder_api_call POST "/applications" "$APP_PAYLOAD")
+      HTTP_CODE="${RESPONSE: -3}"
+      if [[ "$HTTP_CODE" == "201" ]] || [[ "$HTTP_CODE" == "200" ]]; then
+        log_info "Application '{{ .Values.thunder.bootstrap.amCliClient.name }}' created successfully"
+      elif [[ "$HTTP_CODE" == "409" ]]; then
+        log_info "Application '{{ .Values.thunder.bootstrap.amCliClient.name }}' already exists, skipping"
+      else
+        log_error "Failed to create application (HTTP $HTTP_CODE)"
+        echo "Response: ${RESPONSE%???}"
+        exit 1
+      fi
+    fi
+
+  58-am-mcp-client.sh: |
+    #!/bin/bash
+    set -e
+
+    SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]:-$0}")"
+    source "${SCRIPT_DIR}/common.sh"
+
+    log_info "Checking if application '{{  .Values.thunder.bootstrap.amMcpClient.name }}' already exists..."
+
+    # Get the default OU ID
+    RESPONSE=$(thunder_api_call GET "/organization-units/tree/default")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch default organization unit (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+    DEFAULT_OU_ID=$(echo "$BODY" | grep -o '"handle":"default"[^}]*"id":"[^"]*"\|"id":"[^"]*"[^}]*"handle":"default"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+    if [[ -z "$DEFAULT_OU_ID" ]]; then
+      log_error "Could not extract default organization unit ID from response"
+      echo "Response: $BODY"
+      exit 1
+    fi
+    log_info "Using OU ID: $DEFAULT_OU_ID"
+
+    # Look up the default auth flow ID
+    RESPONSE=$(thunder_api_call GET "/flows?flowType=AUTHENTICATION&limit=200")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch authentication flows (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+    AUTH_FLOW_ID=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep '"handle":"default-basic-flow"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+    if [[ -z "$AUTH_FLOW_ID" ]]; then
+      log_error "Could not find default-basic-flow authentication flow"
+      exit 1
+    fi
+    log_info "Using auth flow ID: $AUTH_FLOW_ID"
+
+    # Check existing apps
+    RESPONSE=$(thunder_api_call GET "/applications")
+    HTTP_CODE="${RESPONSE: -3}"
+    BODY="${RESPONSE%???}"
+    if [[ "$HTTP_CODE" != "200" ]]; then
+      log_error "Failed to fetch applications (HTTP $HTTP_CODE)"
+      echo "Response: $BODY"
+      exit 1
+    fi
+
+    APP_PAYLOAD='{
+      "name": "{{  .Values.thunder.bootstrap.amMcpClient.name }}",
+      "description": "{{  .Values.thunder.bootstrap.amMcpClient.description }}",
+      "ouId": "'${DEFAULT_OU_ID}'",
+      "authFlowId": "'${AUTH_FLOW_ID}'",
+      "allowedUserTypes": {{  .Values.thunder.bootstrap.amMcpClient.allowedUserTypes | toJson }},
+      "inboundAuthConfig": [
+        {
+          "type": "oauth2",
+          "config": {
+            "clientId": "{{  .Values.thunder.bootstrap.amMcpClient.clientId }}",
+            "redirectUris": {{  .Values.thunder.bootstrap.amMcpClient.redirectUris | toJson }},
+            "grantTypes": {{  .Values.thunder.bootstrap.amMcpClient.grantTypes | toJson }},
+            "responseTypes": {{  .Values.thunder.bootstrap.amMcpClient.responseTypes | toJson }},
+            "tokenEndpointAuthMethod": "{{  .Values.thunder.bootstrap.amMcpClient.tokenEndpointAuthMethod }}",
+            "pkceRequired": {{  .Values.thunder.bootstrap.amMcpClient.pkceRequired }},
+            "publicClient": {{  .Values.thunder.bootstrap.amMcpClient.publicClient }},
+            "token": {
+              "accessToken": {
+                "validityPeriod": {{  .Values.thunder.bootstrap.amMcpClient.accessTokenValidityPeriod }},
+                "userAttributes": {{  .Values.thunder.bootstrap.amMcpClient.userAttributes | toJson }}
+              },
+              "idToken": {
+                "validityPeriod": {{  .Values.thunder.bootstrap.amMcpClient.idTokenValidityPeriod }},
+                "userAttributes": {{  .Values.thunder.bootstrap.amMcpClient.userAttributes | toJson }}
+              }
+            }
+          }
+        }
+      ]
+    }'
+
+    if echo "$BODY" | grep -q '"clientId":"{{  .Values.thunder.bootstrap.amMcpClient.clientId }}"'; then
+      app_id=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep '"clientId":"{{  .Values.thunder.bootstrap.amMcpClient.clientId }}"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+      log_info "Application '{{  .Values.thunder.bootstrap.amMcpClient.name }}' already exists (id: $app_id), updating..."
+      RESPONSE=$(thunder_api_call PUT "/applications/$app_id" "$APP_PAYLOAD")
+      HTTP_CODE="${RESPONSE: -3}"
+      if [[ "$HTTP_CODE" == "200" ]]; then
+        log_info "Application '{{  .Values.thunder.bootstrap.amMcpClient.name }}' updated successfully"
+      else
+        log_error "Failed to update application (HTTP $HTTP_CODE)"
+        echo "Response: ${RESPONSE%???}"
+        exit 1
+      fi
+    else
+      log_info "Application '{{  .Values.thunder.bootstrap.amMcpClient.name }}' does not exist, creating..."
+      RESPONSE=$(thunder_api_call POST "/applications" "$APP_PAYLOAD")
+      HTTP_CODE="${RESPONSE: -3}"
+      if [[ "$HTTP_CODE" == "201" ]] || [[ "$HTTP_CODE" == "200" ]]; then
+        log_info "Application '{{  .Values.thunder.bootstrap.amMcpClient.name }}' created successfully"
+      elif [[ "$HTTP_CODE" == "409" ]]; then
+        log_info "Application '{{  .Values.thunder.bootstrap.amMcpClient.name }}' already exists, skipping"
+      else
+        log_error "Failed to create application (HTTP $HTTP_CODE)"
+        echo "Response: ${RESPONSE%???}"
+        exit 1
+      fi
+    fi

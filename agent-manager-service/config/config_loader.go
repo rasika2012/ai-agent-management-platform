@@ -1,4 +1,4 @@
-// Copyright (c) 2025, WSO2 LLC. (https://www.wso2.com).
+// Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com).
 //
 // WSO2 LLC. licenses this file to you under the Apache License,
 // Version 2.0 (the "License"); you may not use this file except
@@ -19,15 +19,23 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 
 	"github.com/joho/godotenv"
 )
 
-var config *Config
+var (
+	config              *Config
+	agentWorkloadConfig *AgentWorkload
+)
 
 func GetConfig() *Config {
 	return config
+}
+
+func GetAgentWorkloadConfig() *AgentWorkload {
+	return agentWorkloadConfig
 }
 
 func init() {
@@ -36,6 +44,7 @@ func init() {
 
 func loadEnvs() {
 	config = &Config{}
+	agentWorkloadConfig = &AgentWorkload{}
 
 	envFilePath := os.Getenv("ENV_FILE_PATH")
 	if envFilePath != "" {
@@ -51,6 +60,12 @@ func loadEnvs() {
 	config.AuthHeader = r.readOptionalString("AUTH_HEADER", "Authorization")
 	config.AutoMaxProcsEnabled = r.readOptionalBool("AUTO_MAX_PROCS_ENABLED", true)
 	config.CORSAllowedOrigin = r.readOptionalString("CORS_ALLOWED_ORIGIN", "http://localhost:3000")
+
+	agentWorkloadConfig.CORS = CORSConfig{
+		AllowOrigin:  r.readOptionalString("AGENT_WORKLOAD_CORS_ALLOWED_ORIGIN", "http://localhost:3000"),
+		AllowMethods: r.readOptionalString("AGENT_WORKLOAD_CORS_ALLOWED_METHODS", "GET,POST,PUT,DELETE,PATCH,OPTIONS"),
+		AllowHeaders: r.readOptionalString("AGENT_WORKLOAD_CORS_ALLOWED_HEADERS", "authorization,Content-Type,Origin"),
+	}
 
 	// Logging configuration
 	config.LogLevel = r.readOptionalString("LOG_LEVEL", "INFO")
@@ -74,11 +89,9 @@ func loadEnvs() {
 		MaxIdleTimeSeconds: r.readNullableInt64("DB_MAX_IDLE_TIME_SECONDS"),
 		MaxLifetimeSeconds: r.readNullableInt64("DB_MAX_LIFETIME_SECONDS"),
 	}
-	config.KubeConfig = r.readOptionalString("KUBECONFIG", "")
-
 	// HTTP Server timeout configurations
 	config.ReadTimeoutSeconds = int(r.readOptionalInt64("HTTP_READ_TIMEOUT_SECONDS", 10))
-	config.WriteTimeoutSeconds = int(r.readOptionalInt64("HTTP_WRITE_TIMEOUT_SECONDS", 30))
+	config.WriteTimeoutSeconds = int(r.readOptionalInt64("HTTP_WRITE_TIMEOUT_SECONDS", 90))
 	config.IdleTimeoutSeconds = int(r.readOptionalInt64("HTTP_IDLE_TIMEOUT_SECONDS", 60))
 	config.MaxHeaderBytes = int(r.readOptionalInt64("HTTP_MAX_HEADER_BYTES", 65536)) // 1024 * 64
 
@@ -91,19 +104,11 @@ func loadEnvs() {
 		DefaultBasePath: r.readOptionalString("DEFAULT_CHAT_API_BASE_PATH", "/"),
 	}
 
-	config.APIKeyHeader = r.readOptionalString("API_KEY_HEADER", "X-API-KEY")
-	config.APIKeyValue = r.readRequiredString("API_KEY_VALUE")
-
 	// OpenTelemetry configuration
-	config.OTEL = OTELConfig{
-		// Instrumentation configuration
-		OTELInstrumentationImage: OTELInstrumentationImage{
-			Python310: r.readOptionalString("OTEL_INSTRUMENTATION_IMAGE_PYTHON_310", "ghcr.io/agent-mgt-platform/otel-tracing-instrumentation:python3.10@sha256:d06e28a12e4a83edfcb8e4f6cb98faf5950266b984156f3192433cf0f903e529"),
-			Python311: r.readOptionalString("OTEL_INSTRUMENTATION_IMAGE_PYTHON_311", "ghcr.io/agent-mgt-platform/otel-tracing-instrumentation:python3.11@sha256:d06e28a12e4a83edfcb8e4f6cb98faf5950266b984156f3192433cf0f903e529"),
-			Python312: r.readOptionalString("OTEL_INSTRUMENTATION_IMAGE_PYTHON_312", "ghcr.io/agent-mgt-platform/otel-tracing-instrumentation:python3.12@sha256:d06e28a12e4a83edfcb8e4f6cb98faf5950266b984156f3192433cf0f903e529"),
-			Python313: r.readOptionalString("OTEL_INSTRUMENTATION_IMAGE_PYTHON_313", "ghcr.io/agent-mgt-platform/otel-tracing-instrumentation:python3.13@sha256:d06e28a12e4a83edfcb8e4f6cb98faf5950266b984156f3192433cf0f903e529"),
-		},
+	// Use Version from ldflags or environment variable override
+	config.PackageVersion = r.readOptionalString("AMP_VERSION", Version)
 
+	config.OTEL = OTELConfig{
 		SDKVolumeName: r.readOptionalString("OTEL_SDK_VOLUME_NAME", "otel-tracing-sdk-volume"),
 		SDKMountPath:  r.readOptionalString("OTEL_SDK_MOUNT_PATH", "/otel-tracing-sdk"),
 
@@ -111,26 +116,121 @@ func loadEnvs() {
 		IsTraceContentEnabled: r.readOptionalBool("OTEL_TRACELOOP_TRACE_CONTENT", true),
 
 		// OTLP Exporter configuration
-		ExporterEndpoint: r.readOptionalString("OTEL_EXPORTER_OTLP_ENDPOINT", "http://opentelemetry-collector.openchoreo-observability-plane.svc.cluster.local:4318"),
+		ExporterEndpoint: r.readOptionalString("OTEL_EXPORTER_OTLP_ENDPOINT", "http://obs-gateway-gateway-gateway-runtime.openchoreo-data-plane.svc.cluster.local:22893/otel"),
 	}
 
 	// Observer service configuration - temporarily use localhost for agent-manager-service to access observer service
 	config.Observer = ObserverConfig{
-		URL:      r.readOptionalString("OBSERVER_URL", "http://localhost:8085"),
-		Username: r.readOptionalString("OBSERVER_USERNAME", "dummy"),
-		Password: r.readOptionalString("OBSERVER_PASSWORD", "dummy"),
+		URL: r.readOptionalString("OBSERVER_URL", "http://localhost:8085"),
 	}
 
-	// Trace Observer service configuration - for distributed tracing
-	config.TraceObserver = TraceObserverConfig{
-		URL: r.readOptionalString("TRACE_OBSERVER_URL", "http://localhost:9098"),
-	}
+	config.InstrumentationURL = r.readOptionalString("INSTRUMENTATION_URL", "http://localhost:22893/otel")
 
 	config.IsLocalDevEnv = r.readOptionalBool("IS_LOCAL_DEV_ENV", false)
-	config.DefaultGatewayPort = int(r.readOptionalInt64("DEFAULT_GATEWAY_PORT", 9080))
+	config.DefaultGatewayPort = int(r.readOptionalInt64("DEFAULT_GATEWAY_PORT", 19080))
+	config.KeyManagerConfigurations = KeyManagerConfigurations{
+		// Comma-separated list of allowed issuers and audiences
+		Issuer:   r.readOptionalStringList("KEY_MANAGER_ISSUER", "Agent Management Platform Local"),
+		Audience: r.readOptionalStringList("KEY_MANAGER_AUDIENCE", "localhost"),
+		JWKSUrl:  r.readOptionalString("KEY_MANAGER_JWKS_URL", ""),
+	}
+	config.IsOnPremDeployment = r.readOptionalBool("IS_ON_PREM_DEPLOYMENT", true)
+	config.ServerPublicURL = r.readOptionalString("SERVER_PUBLIC_URL", "")
+	config.OAuthAuthorizationServers = r.readOptionalStringList("OAUTH_AUTHORIZATION_SERVERS", "")
+
+	// IDP OAuth2 client credentials for service-to-service auth
+	config.IDP = IDPConfig{
+		TokenURL:     r.readOptionalString("IDP_TOKEN_URL", "http://thunder.amp.localhost:8080/oauth2/token"),
+		ClientID:     r.readOptionalString("IDP_CLIENT_ID", "amp-api-client"),
+		ClientSecret: r.readOptionalString("IDP_CLIENT_SECRET", "amp-api-client-secret"),
+	}
+
+	// JWT Signing configuration for agent API tokens
+	config.JWTSigning = JWTSigningConfig{
+		PrivateKeyPath:        r.readOptionalString("JWT_SIGNING_PRIVATE_KEY_PATH", "keys/private.pem"),
+		PublicKeysConfigPath:  r.readOptionalString("JWT_SIGNING_PUBLIC_KEYS_CONFIG", "keys/public-keys-config.json"),
+		ActiveKeyID:           r.readOptionalString("JWT_SIGNING_ACTIVE_KEY_ID", "key-1"),
+		DefaultExpiryDuration: r.readOptionalString("JWT_SIGNING_DEFAULT_EXPIRY", "8760h"), // 1 year default
+		Issuer:                r.readOptionalString("JWT_SIGNING_ISSUER", "agent-manager-service"),
+		DefaultEnvironment:    r.readOptionalString("JWT_SIGNING_DEFAULT_ENVIRONMENT", "default"),
+	}
+
+	// GitHub configuration for repository API access
+	config.GitHub = GitHubConfig{
+		Token: r.readOptionalString("GITHUB_TOKEN", ""),
+	}
+	config.OpenChoreo = OpenChoreoConfig{
+		BaseURL: r.readRequiredString("OPEN_CHOREO_BASE_URL"),
+	}
+
+	// Internal Server configuration (for WebSocket and gateway internal APIs)
+	config.InternalServer = InternalServerConfig{
+		Host:                r.readOptionalString("INTERNAL_SERVER_HOST", ""),
+		Port:                int(r.readOptionalInt64("INTERNAL_SERVER_PORT", 9243)),
+		TLSEnabled:          r.readOptionalBool("INTERNAL_SERVER_TLS_ENABLED", true),
+		CertDir:             r.readOptionalString("INTERNAL_SERVER_CERT_DIR", "./data/certs"),
+		ReadTimeoutSeconds:  int(r.readOptionalInt64("INTERNAL_SERVER_READ_TIMEOUT_SECONDS", 10)),
+		WriteTimeoutSeconds: int(r.readOptionalInt64("INTERNAL_SERVER_WRITE_TIMEOUT_SECONDS", 90)),
+		IdleTimeoutSeconds:  int(r.readOptionalInt64("INTERNAL_SERVER_IDLE_TIMEOUT_SECONDS", 60)),
+		MaxHeaderBytes:      int(r.readOptionalInt64("INTERNAL_SERVER_MAX_HEADER_BYTES", 65536)),
+	}
+
+	// WebSocket configuration
+	config.WebSocket = WebSocketConfig{
+		MaxConnections:    int(r.readOptionalInt64("WEBSOCKET_MAX_CONNECTIONS", 1000)),
+		ConnectionTimeout: int(r.readOptionalInt64("WEBSOCKET_CONNECTION_TIMEOUT", 30)),
+		RateLimitPerMin:   int(r.readOptionalInt64("WEBSOCKET_RATE_LIMIT_PER_MIN", 10)),
+	}
+
+	config.SecretManager = SecretManagerConfig{
+		Provider:        r.readOptionalString("SECRET_MANAGER_PROVIDER", "openbao"),
+		RefreshInterval: r.readOptionalString("OPENBAO_REFRESH_INTERVAL", "1h"),
+		BaseURL:         r.readOptionalString("SECRET_MANAGER_API_URL", ""),
+		Timeout:         int(r.readOptionalInt64("SECRET_MANAGER_API_TIMEOUT", 30)),
+	}
+
+	// OpenBao KV store configuration (data plane - for deployment secrets)
+	config.OpenBao = OpenBaoConfig{
+		URL:   r.readOptionalString("OPENBAO_URL", "http://localhost:8200"),
+		Token: r.readOptionalString("OPENBAO_TOKEN", ""),
+		Path:  r.readOptionalString("OPENBAO_PATH", "secret"),
+	}
+
+	// Workflow plane OpenBao KV store configuration (for git secrets)
+	config.WorkflowPlaneOpenBao = OpenBaoConfig{
+		URL:   r.readOptionalString("WORKFLOW_PLANE_OPENBAO_URL", "http://localhost:8200"),
+		Token: r.readOptionalString("WORKFLOW_PLANE_OPENBAO_TOKEN", ""),
+	}
+
+	// Thunder admin API configuration for provisioning per-org OAuth apps
+	config.Thunder = ThunderConfig{
+		BaseURL:      r.readOptionalString("THUNDER_BASE_URL", ""),
+		ClientID:     r.readOptionalString("THUNDER_CLIENT_ID", ""),
+		ClientSecret: r.readOptionalString("THUNDER_CLIENT_SECRET", ""),
+	}
+	if config.Thunder.BaseURL != "" && (config.Thunder.ClientID == "" || config.Thunder.ClientSecret == "") {
+		r.errors = append(r.errors, fmt.Errorf("THUNDER_BASE_URL is set but THUNDER_CLIENT_ID and/or THUNDER_CLIENT_SECRET are missing"))
+	}
+
+	config.TLSConfig = TLSConfig{
+		EnableTLS: r.readOptionalBool("TLS_ENABLED", false),
+	}
+
+	// Encryption key for secrets at rest (hex-encoded 32-byte AES-256 key)
+	// Encryption key for secrets at rest (hex-encoded 32-byte AES-256 key).
+	// Validated at runtime in wiring.ProvideEncryptionKey() so that
+	// non-server commands (e.g. --migrate) can run without the key.
+	config.EncryptionKey = r.readOptionalString("ENCRYPTION_KEY", "")
 
 	// Validate HTTP server configurations
 	validateHTTPServerConfigs(config, r)
+
+	// Validate Internal server configurations
+	validateInternalServerConfigs(config, r)
+
+	validateOAuthAuthorizationServers(config, r)
+	validateServerPublicURL(config, r)
+	validateInstrumentationURL(config, r)
 
 	r.logAndExitIfErrorsFound()
 
@@ -156,5 +256,70 @@ func validateHTTPServerConfigs(cfg *Config, r *configReader) {
 	}
 	if cfg.MaxHeaderBytes < 1024 || cfg.MaxHeaderBytes > 1048576 { // 1KB to 1MB
 		r.errors = append(r.errors, fmt.Errorf("HTTP_MAX_HEADER_BYTES must be between 1024 and 1048576, got %d", cfg.MaxHeaderBytes))
+	}
+}
+
+func validateOAuthAuthorizationServers(cfg *Config, r *configReader) {
+	for _, raw := range cfg.OAuthAuthorizationServers {
+		u, err := url.Parse(raw)
+		if err != nil {
+			r.errors = append(r.errors, fmt.Errorf("OAUTH_AUTHORIZATION_SERVERS entry %q is not a valid URL: %w", raw, err))
+			continue
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			r.errors = append(r.errors, fmt.Errorf("OAUTH_AUTHORIZATION_SERVERS entry %q must use http or https scheme", raw))
+		}
+		if u.Host == "" {
+			r.errors = append(r.errors, fmt.Errorf("OAUTH_AUTHORIZATION_SERVERS entry %q must have a non-empty host", raw))
+		}
+	}
+}
+
+func validateServerPublicURL(cfg *Config, r *configReader) {
+	if cfg.ServerPublicURL == "" {
+		return
+	}
+	u, err := url.Parse(cfg.ServerPublicURL)
+	if err != nil {
+		r.errors = append(r.errors, fmt.Errorf("SERVER_PUBLIC_URL %q is not a valid URL: %w", cfg.ServerPublicURL, err))
+		return
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		r.errors = append(r.errors, fmt.Errorf("SERVER_PUBLIC_URL %q must use http or https scheme", cfg.ServerPublicURL))
+	}
+	if u.Host == "" {
+		r.errors = append(r.errors, fmt.Errorf("SERVER_PUBLIC_URL %q must have a non-empty host", cfg.ServerPublicURL))
+	}
+}
+
+func validateInstrumentationURL(cfg *Config, r *configReader) {
+	if cfg.InstrumentationURL == "" {
+		return
+	}
+	u, err := url.Parse(cfg.InstrumentationURL)
+	if err != nil {
+		r.errors = append(r.errors, fmt.Errorf("INSTRUMENTATION_URL %q is not a valid URL: %w", cfg.InstrumentationURL, err))
+		return
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		r.errors = append(r.errors, fmt.Errorf("INSTRUMENTATION_URL %q must use http or https scheme", cfg.InstrumentationURL))
+	}
+	if u.Host == "" {
+		r.errors = append(r.errors, fmt.Errorf("INSTRUMENTATION_URL %q must have a non-empty host", cfg.InstrumentationURL))
+	}
+}
+
+func validateInternalServerConfigs(cfg *Config, r *configReader) {
+	if cfg.InternalServer.Port < 1 || cfg.InternalServer.Port > 65535 {
+		r.errors = append(r.errors, fmt.Errorf("INTERNAL_SERVER_PORT must be between 1 and 65535, got %d", cfg.InternalServer.Port))
+	}
+	if cfg.InternalServer.ReadTimeoutSeconds <= 0 {
+		r.errors = append(r.errors, fmt.Errorf("INTERNAL_SERVER_READ_TIMEOUT_SECONDS must be greater than 0, got %d", cfg.InternalServer.ReadTimeoutSeconds))
+	}
+	if cfg.InternalServer.WriteTimeoutSeconds <= 0 {
+		r.errors = append(r.errors, fmt.Errorf("INTERNAL_SERVER_WRITE_TIMEOUT_SECONDS must be greater than 0, got %d", cfg.InternalServer.WriteTimeoutSeconds))
+	}
+	if cfg.InternalServer.CertDir == "" {
+		r.errors = append(r.errors, fmt.Errorf("INTERNAL_SERVER_CERT_DIR must be non-empty"))
 	}
 }

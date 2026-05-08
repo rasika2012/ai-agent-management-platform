@@ -16,7 +16,7 @@
  * under the License.
  */
 
-import { ReactNode } from "react";
+import type { ReactNode } from "react";
 
 interface AuthProviderProps {
     children: ReactNode;
@@ -28,6 +28,7 @@ export type UserInfo = {
     allowedScopes?: string;
     displayName?: string;
     familyName?: string;
+    email?: string;
     givenName?: string;
     jti?: string;
     orgHandle?: string;

@@ -1,3 +1,0 @@
-# Traceloop SDK (OpenLLMetry)
-
-traceloop-sdk

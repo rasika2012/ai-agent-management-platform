@@ -17,11 +17,9 @@
  */
 
 import {
-  Card,
-  CardActionArea,
-  CardContent,
   Box,
   Typography,
+  Form,
 } from "@wso2/oxygen-ui";
 
 interface NewAgentTypeCardProps {
@@ -29,73 +27,40 @@ interface NewAgentTypeCardProps {
   title: string;
   subheader: string;
   icon: React.ReactNode;
-  content: React.ReactNode;
   onClick: (type: string) => void;
 }
 
 export const NewAgentTypeCard = (props: NewAgentTypeCardProps) => {
-  const { type, title, subheader, icon, content, onClick } = props;
+  const { type, title, subheader, icon, onClick } = props;
   const handleClick = () => {
     onClick(type);
   };
 
   return (
-    <Card
-      variant="outlined"
-      elevation={0}
+    <Form.CardButton
+      onClick={handleClick}
       sx={{
         width: 450,
-        transition: "all 0.3s ease-in-out",
-        "&.MuiCard-root": {
-          backgroundColor: "background.paper",
-        },
-        "&:hover": {
-          borderColor: "primary.main",
-        },
+        py: 2,
       }}
     >
-      <CardActionArea
-        onClick={handleClick}
-        sx={{
-          height: "100%",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-        }}
-      >
-        <CardContent
+      <Typography width="100%" variant="h4" textAlign="center">
+        {title}
+      </Typography>
+      <Form.CardContent>
+        <Box
           sx={{
-            flexGrow: 1,
             display: "flex",
-            flexDirection: "column",
-            width: "100%",
-            p: 3,
             justifyContent: "center",
-            alignItems: "center",
+            alignItems: "flex-end",
+            height: 250,
+            mb: 10,
           }}
         >
-          <Typography variant="h4" textAlign="center" gutterBottom>
-            {title}
-          </Typography>
-
-          <Box
-            sx={{
-              color: "primary.main",
-            }}
-          >
-            {icon}
-          </Box>
-          <Typography
-            variant="body2"
-            color="text.secondary"
-            textAlign="center"
-            sx={{ mb: 2 }}
-          >
-            {subheader}
-          </Typography>
-          <Box sx={{ mb: 2 }}>{content}</Box>
-        </CardContent>
-      </CardActionArea>
-    </Card>
+          {icon}
+        </Box>
+        <Typography variant="body2" textAlign="center">{subheader}</Typography>
+      </Form.CardContent>
+    </Form.CardButton>
   );
 };

@@ -17,11 +17,10 @@
  */
 
 import { TracesComponent } from './Traces.Component';
-import { TracesProject } from './Traces.Project';
-import { TracesOrganization } from './Traces.Organization';
+import type { PageMetadata } from '@agent-management-platform/types';
 import { Workflow } from '@wso2/oxygen-ui-icons-react';
 
-export const metaData = {
+export const metaData: PageMetadata = {
   title: 'Traces',
   description: 'A page component for Traces',
   icon: Workflow,
@@ -29,15 +28,11 @@ export const metaData = {
   component: TracesComponent,
   levels: {
     component: TracesComponent,
-    project: TracesProject,
-    organization: TracesOrganization,
   },
 };
 
 export { 
   TracesComponent,
-  TracesProject,
-  TracesOrganization,
 };
 
 export default TracesComponent;

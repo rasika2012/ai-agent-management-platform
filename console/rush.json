@@ -345,8 +345,12 @@
       "projectFolder": "workspaces/libs/types"
     },
     {
-      "packageName": "@agent-management-platform/webapp",
-      "projectFolder": "apps/webapp"
+      "packageName": "@wso2/amp-core-ui",
+      "projectFolder": "workspaces/core-ui"
+    },
+    {
+      "packageName": "web-ui",
+      "projectFolder": "apps/web-ui"
     },
     {
       "packageName": "@agent-management-platform/eslint-config",
@@ -361,10 +365,6 @@
       "projectFolder": "workspaces/libs/views"
     },
     {
-      "packageName": "@agent-management-platform/agents-list-page",
-      "projectFolder": "workspaces/pages/agent-list"
-    },
-    {
       "packageName": "@agent-management-platform/add-new-agent",
       "projectFolder": "workspaces/pages/add-new-agent"
     },
@@ -373,12 +373,12 @@
       "projectFolder": "workspaces/libs/shared-component"
     },
     {
-      "packageName": "generator-agent-page",
-      "projectFolder": "workspaces/pages/.template"
-    },
-    {
       "packageName": "@agent-management-platform/overview",
       "projectFolder": "workspaces/pages/overview"
+    },
+    {
+      "packageName": "@agent-management-platform/configure-agent",
+      "projectFolder": "workspaces/pages/configure-agent"
     },
     {
       "packageName": "@agent-management-platform/build",
@@ -395,8 +395,31 @@
     {
       "packageName": "@agent-management-platform/traces",
       "projectFolder": "workspaces/pages/traces"
+    },
+    {
+      "packageName": "@agent-management-platform/logs",
+      "projectFolder": "workspaces/pages/logs"
+    },
+    {
+      "packageName": "@agent-management-platform/metrics",
+      "projectFolder": "workspaces/pages/metrics"
+    },
+    {
+      "packageName": "@agent-management-platform/eval",
+      "projectFolder": "workspaces/pages/eval"
+    },
+    {
+      "packageName": "@agent-management-platform/add-new-project",
+      "projectFolder": "workspaces/pages/add-new-project"
+    },
+    {
+      "packageName": "@agent-management-platform/llm-providers",
+      "projectFolder": "workspaces/pages/llm-providers"
+    },
+    {
+      "packageName": "@agent-management-platform/gateways",
+      "projectFolder": "workspaces/pages/gateways"
     }
-    
     // {
     //   /**
     //    * The NPM package name of the project (must match package.json)

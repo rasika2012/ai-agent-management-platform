@@ -25,21 +25,25 @@ type CreateAgentRequest struct {
 	DisplayName  string       `json:"displayName"`
 	Provisioning Provisioning `json:"provisioning"`
 	// Description of the agent
-	Description    *string               `json:"description,omitempty"`
-	AgentType      *AgentType            `json:"agentType,omitempty"`
-	RuntimeConfigs *RuntimeConfiguration `json:"runtimeConfigs,omitempty"`
-	InputInterface *InputInterface       `json:"inputInterface,omitempty"`
+	Description    *string         `json:"description,omitempty"`
+	AgentType      AgentType       `json:"agentType"`
+	Build          *Build          `json:"build,omitempty"`
+	Configurations *Configurations `json:"configurations,omitempty"`
+	InputInterface *InputInterface `json:"inputInterface,omitempty"`
+	// Optional LLM configurations to create atomically with the agent. Name and type are auto-generated.
+	ModelConfig []ModelConfigRequest `json:"modelConfig,omitempty"`
 }
 
 // NewCreateAgentRequest instantiates a new CreateAgentRequest object
 // This constructor will assign default values to properties that have it defined,
 // and makes sure properties required by API are set, but the set of arguments
 // will change when the set of required properties is changed
-func NewCreateAgentRequest(name string, displayName string, provisioning Provisioning) *CreateAgentRequest {
+func NewCreateAgentRequest(name string, displayName string, provisioning Provisioning, agentType AgentType) *CreateAgentRequest {
 	this := CreateAgentRequest{}
 	this.Name = name
 	this.DisplayName = displayName
 	this.Provisioning = provisioning
+	this.AgentType = agentType
 	return &this
 }
 
@@ -155,68 +159,92 @@ func (o *CreateAgentRequest) SetDescription(v string) {
 	o.Description = &v
 }
 
-// GetAgentType returns the AgentType field value if set, zero value otherwise.
+// GetAgentType returns the AgentType field value
 func (o *CreateAgentRequest) GetAgentType() AgentType {
-	if o == nil || IsNil(o.AgentType) {
+	if o == nil {
 		var ret AgentType
 		return ret
 	}
-	return *o.AgentType
+
+	return o.AgentType
 }
 
-// GetAgentTypeOk returns a tuple with the AgentType field value if set, nil otherwise
+// GetAgentTypeOk returns a tuple with the AgentType field value
 // and a boolean to check if the value has been set.
 func (o *CreateAgentRequest) GetAgentTypeOk() (*AgentType, bool) {
-	if o == nil || IsNil(o.AgentType) {
+	if o == nil {
 		return nil, false
 	}
-	return o.AgentType, true
+	return &o.AgentType, true
 }
 
-// HasAgentType returns a boolean if a field has been set.
-func (o *CreateAgentRequest) HasAgentType() bool {
-	if o != nil && !IsNil(o.AgentType) {
-		return true
-	}
-
-	return false
-}
-
-// SetAgentType gets a reference to the given AgentType and assigns it to the AgentType field.
+// SetAgentType sets field value
 func (o *CreateAgentRequest) SetAgentType(v AgentType) {
-	o.AgentType = &v
+	o.AgentType = v
 }
 
-// GetRuntimeConfigs returns the RuntimeConfigs field value if set, zero value otherwise.
-func (o *CreateAgentRequest) GetRuntimeConfigs() RuntimeConfiguration {
-	if o == nil || IsNil(o.RuntimeConfigs) {
-		var ret RuntimeConfiguration
+// GetBuild returns the Build field value if set, zero value otherwise.
+func (o *CreateAgentRequest) GetBuild() Build {
+	if o == nil || IsNil(o.Build) {
+		var ret Build
 		return ret
 	}
-	return *o.RuntimeConfigs
+	return *o.Build
 }
 
-// GetRuntimeConfigsOk returns a tuple with the RuntimeConfigs field value if set, nil otherwise
+// GetBuildOk returns a tuple with the Build field value if set, nil otherwise
 // and a boolean to check if the value has been set.
-func (o *CreateAgentRequest) GetRuntimeConfigsOk() (*RuntimeConfiguration, bool) {
-	if o == nil || IsNil(o.RuntimeConfigs) {
+func (o *CreateAgentRequest) GetBuildOk() (*Build, bool) {
+	if o == nil || IsNil(o.Build) {
 		return nil, false
 	}
-	return o.RuntimeConfigs, true
+	return o.Build, true
 }
 
-// HasRuntimeConfigs returns a boolean if a field has been set.
-func (o *CreateAgentRequest) HasRuntimeConfigs() bool {
-	if o != nil && !IsNil(o.RuntimeConfigs) {
+// HasBuild returns a boolean if a field has been set.
+func (o *CreateAgentRequest) HasBuild() bool {
+	if o != nil && !IsNil(o.Build) {
 		return true
 	}
 
 	return false
 }
 
-// SetRuntimeConfigs gets a reference to the given RuntimeConfiguration and assigns it to the RuntimeConfigs field.
-func (o *CreateAgentRequest) SetRuntimeConfigs(v RuntimeConfiguration) {
-	o.RuntimeConfigs = &v
+// SetBuild gets a reference to the given Build and assigns it to the Build field.
+func (o *CreateAgentRequest) SetBuild(v Build) {
+	o.Build = &v
+}
+
+// GetConfigurations returns the Configurations field value if set, zero value otherwise.
+func (o *CreateAgentRequest) GetConfigurations() Configurations {
+	if o == nil || IsNil(o.Configurations) {
+		var ret Configurations
+		return ret
+	}
+	return *o.Configurations
+}
+
+// GetConfigurationsOk returns a tuple with the Configurations field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+func (o *CreateAgentRequest) GetConfigurationsOk() (*Configurations, bool) {
+	if o == nil || IsNil(o.Configurations) {
+		return nil, false
+	}
+	return o.Configurations, true
+}
+
+// HasConfigurations returns a boolean if a field has been set.
+func (o *CreateAgentRequest) HasConfigurations() bool {
+	if o != nil && !IsNil(o.Configurations) {
+		return true
+	}
+
+	return false
+}
+
+// SetConfigurations gets a reference to the given Configurations and assigns it to the Configurations field.
+func (o *CreateAgentRequest) SetConfigurations(v Configurations) {
+	o.Configurations = &v
 }
 
 // GetInputInterface returns the InputInterface field value if set, zero value otherwise.
@@ -251,6 +279,38 @@ func (o *CreateAgentRequest) SetInputInterface(v InputInterface) {
 	o.InputInterface = &v
 }
 
+// GetModelConfig returns the ModelConfig field value if set, zero value otherwise.
+func (o *CreateAgentRequest) GetModelConfig() []ModelConfigRequest {
+	if o == nil || IsNil(o.ModelConfig) {
+		var ret []ModelConfigRequest
+		return ret
+	}
+	return o.ModelConfig
+}
+
+// GetModelConfigOk returns a tuple with the ModelConfig field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+func (o *CreateAgentRequest) GetModelConfigOk() ([]ModelConfigRequest, bool) {
+	if o == nil || IsNil(o.ModelConfig) {
+		return nil, false
+	}
+	return o.ModelConfig, true
+}
+
+// HasModelConfig returns a boolean if a field has been set.
+func (o *CreateAgentRequest) HasModelConfig() bool {
+	if o != nil && !IsNil(o.ModelConfig) {
+		return true
+	}
+
+	return false
+}
+
+// SetModelConfig gets a reference to the given []ModelConfigRequest and assigns it to the ModelConfig field.
+func (o *CreateAgentRequest) SetModelConfig(v []ModelConfigRequest) {
+	o.ModelConfig = v
+}
+
 func (o CreateAgentRequest) MarshalJSON() ([]byte, error) {
 	toSerialize, err := o.ToMap()
 	if err != nil {
@@ -267,14 +327,18 @@ func (o CreateAgentRequest) ToMap() (map[string]interface{}, error) {
 	if !IsNil(o.Description) {
 		toSerialize["description"] = o.Description
 	}
-	if !IsNil(o.AgentType) {
-		toSerialize["agentType"] = o.AgentType
+	toSerialize["agentType"] = o.AgentType
+	if !IsNil(o.Build) {
+		toSerialize["build"] = o.Build
 	}
-	if !IsNil(o.RuntimeConfigs) {
-		toSerialize["runtimeConfigs"] = o.RuntimeConfigs
+	if !IsNil(o.Configurations) {
+		toSerialize["configurations"] = o.Configurations
 	}
 	if !IsNil(o.InputInterface) {
 		toSerialize["inputInterface"] = o.InputInterface
+	}
+	if !IsNil(o.ModelConfig) {
+		toSerialize["modelConfig"] = o.ModelConfig
 	}
 	return toSerialize, nil
 }

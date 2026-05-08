@@ -1,0 +1,223 @@
+apiVersion: openchoreo.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: monitor-evaluation-workflow
+  namespace: {{ .Values.ampEvaluation.workflowNamespace | default "default" }}
+  annotations:
+    openchoreo.dev/description: "Periodic evaluation monitor for AI agents - runs evaluators against agent traces"
+  labels:
+{{- include "amp-evaluation-extension.labels" . | nindent 4 }}
+spec:
+  # Template Variable Reference (processed by controller):
+  # ${metadata.workflowRunName}  - WorkflowRun CR name
+  # ${metadata.namespaceName}    - Namespace name (organization)
+  # ${parameters.*}              - Developer-provided values from parameters schema
+
+  # Schema definition for monitor workflows
+  # Note: These parameters are populated by the Go scheduler for each run
+  parameters:
+    openAPIV3Schema:
+      type: object
+      required:
+        - monitor
+        - organization
+        - project
+        - agent
+        - environment
+        - evaluation
+        - publishing
+      properties:
+        monitor:
+          type: object
+          required:
+            - name
+          properties:
+            name:
+              type: string
+              description: Monitor unique name
+            displayName:
+              type: string
+              default: ""
+              description: Human-readable monitor name
+        organization:
+          type: string
+          description: Organisation name
+        project:
+          type: string
+          description: Project name
+        agent:
+          type: object
+          required:
+            - id
+            - name
+          properties:
+            id:
+              type: string
+              description: Agent UUID
+            name:
+              type: string
+              description: Component (agent) name
+        environment:
+          type: object
+          required:
+            - id
+            - name
+          properties:
+            id:
+              type: string
+              description: Environment UUID
+            name:
+              type: string
+              description: Environment name
+        evaluation:
+          type: object
+          required:
+            - evaluators
+            - traceStart
+            - traceEnd
+          properties:
+            evaluators:
+              type: string
+              description: JSON array of evaluator configs
+            llmProxySecretPath:
+              type: string
+              default: ""
+              description: "OpenBao KV path of the composite LLM proxy credentials secret. When non-empty the workflow creates an ExternalSecret to fetch LLM_API_KEY."
+            llmApiBase:
+              type: string
+              default: ""
+              description: "Gateway proxy URL passed to the eval job as LLM_API_BASE env var."
+            samplingRate:
+              type: number
+              default: 1.0
+              description: Sampling rate for traces (0.0-1.0)
+            traceStart:
+              type: string
+              description: Start time for trace evaluation (ISO 8601 format, calculated by scheduler)
+            traceEnd:
+              type: string
+              description: End time for trace evaluation (ISO 8601 format, calculated by scheduler)
+        publishing:
+          type: object
+          required:
+            - monitorId
+            - runId
+          properties:
+            monitorId:
+              type: string
+              description: Monitor UUID for publishing scores
+            runId:
+              type: string
+              description: Run UUID for this evaluation execution
+            clientId:
+              type: string
+              default: {{ .Values.ampEvaluation.publisher.clientId | quote }}
+              description: OAuth2 client ID for publisher authentication
+            secretKVPath:
+              type: string
+              default: "amp-publisher-client-secret"
+              description: KV path in the secret store (remoteRef.key for ExternalSecret)
+            secretKey:
+              type: string
+              default: "value"
+              description: Key within the KV secret (remoteRef.property for ExternalSecret)
+
+  # Rendered workflow resource for WorkflowRun executions
+  # Each WorkflowRun creates a single Workflow (not CronWorkflow)
+  # The Go scheduler creates WorkflowRuns on-demand with calculated time windows
+  runTemplate:
+    apiVersion: argoproj.io/v1alpha1
+    kind: Workflow
+    metadata:
+      name: ${metadata.workflowRunName}
+      namespace: ${metadata.namespace}
+      labels:
+        app.kubernetes.io/name: amp-monitor
+        app.kubernetes.io/component: evaluation
+        amp.wso2.com/monitor-name: ${parameters.monitor.name}
+        amp.wso2.com/component: ${parameters.agent.name}
+    spec:
+      serviceAccountName: workflow-sa
+      arguments:
+        parameters:
+          - name: monitor-name
+            value: ${parameters.monitor.name}
+          - name: organization
+            value: ${parameters.organization}
+          - name: project
+            value: ${parameters.project}
+          - name: agent
+            value: ${parameters.agent.name}
+          - name: environment
+            value: ${parameters.environment.name}
+          - name: evaluators
+            value: ${parameters.evaluation.evaluators}
+          - name: sampling-rate
+            value: ${parameters.evaluation.samplingRate}
+          - name: trace-start
+            value: ${parameters.evaluation.traceStart}
+          - name: llm-proxy-secret-name
+            value: ${metadata.workflowRunName}-llm-proxy-credentials
+          - name: llm-api-base
+            value: ${parameters.evaluation.llmApiBase}
+          - name: trace-end
+            value: ${parameters.evaluation.traceEnd}
+          - name: traces-api-endpoint
+            value: {{ .Values.ampEvaluation.tracesApiEndpoint | quote }}
+          - name: monitor-id
+            value: ${parameters.publishing.monitorId}
+          - name: run-id
+            value: ${parameters.publishing.runId}
+          - name: publisher-endpoint
+            value: {{ .Values.ampEvaluation.publisher.endpoint | quote }}
+          - name: idp-token-url
+            value: {{ .Values.ampEvaluation.publisher.idpTokenUrl | quote }}
+          - name: idp-client-id
+            value: ${parameters.publishing.clientId}
+          - name: publisher-secret-name
+            value: ${metadata.workflowRunName}-amp-publisher-credentials
+      workflowTemplateRef:
+        clusterScope: true
+        name: amp-monitor-evaluation
+  resources:
+    - id: amp-publisher-credentials
+      template:
+        apiVersion: external-secrets.io/v1
+        kind: ExternalSecret
+        metadata:
+          name: ${metadata.workflowRunName}-amp-publisher-credentials
+          namespace: ${metadata.namespace}
+        spec:
+          refreshInterval: 15s
+          secretStoreRef:
+            name: default
+            kind: ClusterSecretStore
+          target:
+            name: ${metadata.workflowRunName}-amp-publisher-credentials
+            creationPolicy: Owner
+          data:
+            - secretKey: client-secret
+              remoteRef:
+                key: ${parameters.publishing.secretKVPath}
+                property: ${parameters.publishing.secretKey}
+    - id: llm-proxy-credentials
+      includeWhen: '${parameters.evaluation.llmProxySecretPath != ""}'
+      template:
+        apiVersion: external-secrets.io/v1
+        kind: ExternalSecret
+        metadata:
+          name: ${metadata.workflowRunName}-llm-proxy-credentials
+          namespace: ${metadata.namespace}
+        spec:
+          refreshInterval: 15s
+          secretStoreRef:
+            name: amp-openbao-store
+            kind: ClusterSecretStore
+          target:
+            name: ${metadata.workflowRunName}-llm-proxy-credentials
+            creationPolicy: Owner
+          data:
+            - secretKey: LLM_API_KEY
+              remoteRef:
+                key: ${parameters.evaluation.llmProxySecretPath}
+                property: LLM_API_KEY

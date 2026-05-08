@@ -1,4 +1,4 @@
-// Copyright (c) 2025, WSO2 LLC. (https://www.wso2.com).
+// Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com).
 //
 // WSO2 LLC. licenses this file to you under the Apache License,
 // Version 2.0 (the "License"); you may not use this file except
@@ -19,174 +19,483 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"log"
 	"sort"
+	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/wso2/ai-agent-management-platform/traces-observer-service/middleware/logger"
+	"github.com/wso2/ai-agent-management-platform/traces-observer-service/observer"
 	"github.com/wso2/ai-agent-management-platform/traces-observer-service/opensearch"
 )
 
-// TracingController provides tracing functionality
+const (
+	// MaxSpansPerRequest is the hard cap on spans fetched per trace (used in export).
+	MaxSpansPerRequest = 10000
+	// maxConcurrentFetches limits concurrent GetSpanDetails calls to the Observer.
+	maxConcurrentFetches = 50
+	// maxConcurrentTraces limits concurrent per-trace goroutines in ExportTraces.
+	maxConcurrentTraces = 10
+)
+
+// TracingController provides tracing functionality via the observer service.
 type TracingController struct {
-	osClient *opensearch.Client
+	observerClient observer.Client
 }
 
-// NewTracingController creates a new tracing service
-func NewTracingController(osClient *opensearch.Client) *TracingController {
-	return &TracingController{
-		osClient: osClient,
-	}
+// NewTracingController creates a new tracing controller.
+func NewTracingController(observerClient observer.Client) *TracingController {
+	return &TracingController{observerClient: observerClient}
 }
 
-// GetTraceOverviews retrieves unique trace IDs with root span information
-func (s *TracingController) GetTraceOverviews(ctx context.Context, params opensearch.TraceQueryParams) (*opensearch.TraceOverviewResponse, error) {
-	log.Printf("Getting trace overviews for component: %s, project: %s, environment: %s", params.ComponentUid, params.ProjectUid, params.EnvironmentUid)
+// TraceQueryParams holds parameters for trace queries.
+type TraceQueryParams struct {
+	Organization string
+	Project      *string
+	Agent        *string
+	Environment  *string
+	StartTime    time.Time
+	EndTime      time.Time
+	Limit        int
+	SortOrder    string
+}
 
-	// Set defaults
-	if params.Limit == 0 {
-		params.Limit = 10
+// SpanSummary is a lightweight span summary for the span list endpoint.
+type SpanSummary struct {
+	SpanID       string    `json:"spanId"`
+	SpanName     string    `json:"spanName"`
+	ParentSpanID string    `json:"parentSpanId,omitempty"`
+	StartTime    time.Time `json:"startTime"`
+	EndTime      time.Time `json:"endTime"`
+	DurationNs   int64     `json:"durationNs"`
+}
+
+// SpanListResponse is the response for GET /api/v1/traces/{traceId}/spans.
+type SpanListResponse struct {
+	Spans      []SpanSummary `json:"spans"`
+	TotalCount int           `json:"totalCount"`
+}
+
+// GetTraceOverviews fetches a page of traces with root-span enrichment (input, output, tokenUsage).
+// It calls QueryTraces once, then fetches root span details in parallel (one per trace in the page).
+func (c *TracingController) GetTraceOverviews(ctx context.Context, params TraceQueryParams) (*opensearch.TraceOverviewResponse, error) {
+	log := logger.GetLogger(ctx)
+
+	sortOrder := params.SortOrder
+	req := observer.TracesQueryRequest{
+		StartTime: params.StartTime,
+		EndTime:   params.EndTime,
+		Limit:     &params.Limit,
+		SortOrder: &sortOrder,
+		SearchScope: observer.ComponentSearchScope{
+			Namespace:   params.Organization,
+			Project:     params.Project,
+			Component:   params.Agent,
+			Environment: params.Environment,
+		},
 	}
-	if params.Offset < 0 {
-		params.Offset = 0
-	}
 
-	// For trace overview, we need to fetch more spans to ensure we get complete traces
-	// Multiply limit by a factor to get enough spans (each trace typically has multiple spans)
-	originalLimit := params.Limit
-	originalOffset := params.Offset
-	params.Limit = params.Limit * 50 // Fetch more spans to capture complete traces
-	params.Offset = 0                // Start from beginning for grouping
-
-	// Use the existing BuildTraceQuery
-	query := opensearch.BuildTraceQuery(params)
-
-	// Generate indices based on time range
-	indices, err := opensearch.GetIndicesForTimeRange(params.StartTime, params.EndTime)
+	tracesResp, err := c.observerClient.QueryTraces(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate indices: %w", err)
-	}
-	log.Printf("Searching indices: %v", indices)
-
-	// Execute search
-	response, err := s.osClient.Search(ctx, indices, query)
-	if err != nil {
-		return nil, fmt.Errorf("failed to search trace overviews: %w", err)
+		return nil, err
 	}
 
-	// Parse all spans
-	spans := opensearch.ParseSpans(response)
-
-	// Group spans by traceId and find root spans
-	traceMap := make(map[string][]opensearch.Span)
-	for _, span := range spans {
-		traceMap[span.TraceID] = append(traceMap[span.TraceID], span)
+	if len(tracesResp.Traces) == 0 {
+		return &opensearch.TraceOverviewResponse{
+			Traces:     []opensearch.TraceOverview{},
+			TotalCount: tracesResp.Total,
+		}, nil
 	}
 
-	// Process each trace to find root span
-	allOverviews := []opensearch.TraceOverview{}
-	for traceID, traceSpans := range traceMap {
-		// Find root span (span with no parentSpanId)
-		var rootSpanID, rootSpanName, startTime, endTime string
-		var durationInNanos int64
-		var rootSpanAttributes map[string]interface{}
+	// Fetch root span details in parallel, bounded by maxConcurrentFetches.
+	type result struct {
+		idx  int
+		span *opensearch.Span
+		err  error
+	}
+	results := make([]result, len(tracesResp.Traces))
+	sem := make(chan struct{}, maxConcurrentFetches)
+	var wg sync.WaitGroup
 
-		for _, span := range traceSpans {
-			if span.ParentSpanID == "" {
-				rootSpanID = span.SpanID
-				rootSpanName = span.Name
-				rootSpanAttributes = span.Attributes
-				startTime = span.StartTime.Format(time.RFC3339Nano)
-				endTime = span.EndTime.Format(time.RFC3339Nano)
-				durationInNanos = span.DurationInNanos
-				break
+	for i, t := range tracesResp.Traces {
+		if t.RootSpanID == "" {
+			log.Warn("trace has no rootSpanId, skipping", "traceId", t.TraceID)
+			continue
+		}
+		wg.Add(1)
+		go func(idx int, traceID, rootSpanID string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			details, err := c.observerClient.GetSpanDetails(ctx, traceID, rootSpanID)
+			if err != nil {
+				results[idx] = result{idx: idx, err: err}
+				return
 			}
+			span := observer.ConvertSpanDetailsToSpan(traceID, details)
+			enriched := opensearch.ProcessSpan(span)
+			results[idx] = result{idx: idx, span: &enriched}
+		}(i, t.TraceID, t.RootSpanID)
+	}
+	wg.Wait()
+
+	overviews := make([]opensearch.TraceOverview, 0, len(tracesResp.Traces))
+	for i, t := range tracesResp.Traces {
+		res := results[i]
+		if res.err != nil {
+			log.Warn("failed to fetch root span details, skipping trace",
+				"traceId", t.TraceID, "err", res.err)
+			continue
+		}
+		if res.span == nil {
+			continue
+		}
+		rootSpan := res.span
+
+		// Extract input/output — same logic as controller.go lines 315-321.
+		var input, output interface{}
+		if opensearch.IsCrewAISpan(rootSpan.Attributes) {
+			input, output = opensearch.ExtractCrewAIRootSpanInputOutput(rootSpan)
+		} else {
+			input, output = opensearch.ExtractRootSpanInputOutput(rootSpan)
 		}
 
-		// Add to overviews if we found a root span
-		if rootSpanID != "" {
-			allOverviews = append(allOverviews, opensearch.TraceOverview{
-				TraceID:            traceID,
-				RootSpanID:         rootSpanID,
-				RootSpanName:       rootSpanName,
-				RootSpanAttributes: rootSpanAttributes,
-				StartTime:          startTime,
-				EndTime:            endTime,
-				DurationInNanos:    durationInNanos,
-				SpanCount:          len(traceSpans),
-			})
+		// Extract token usage — same fallback chain as controller.go lines 323-335.
+		var tokenUsage *opensearch.TokenUsage
+		if opensearch.IsCrewAISpan(rootSpan.Attributes) {
+			tokenUsage = opensearch.ExtractCrewAITraceTokenUsage(rootSpan)
 		}
+		if tokenUsage == nil {
+			tokenUsage = opensearch.ExtractTokenUsageFromEntityOutput(rootSpan)
+		}
+		if tokenUsage == nil {
+			tokenUsage = opensearch.ExtractTokenUsage([]opensearch.Span{*rootSpan})
+		}
+
+		traceStatus := opensearch.ExtractTraceStatus([]opensearch.Span{*rootSpan})
+
+		overviews = append(overviews, opensearch.TraceOverview{
+			TraceID:         t.TraceID,
+			RootSpanID:      t.RootSpanID,
+			RootSpanName:    t.RootSpanName,
+			RootSpanKind:    string(opensearch.DetermineSpanType(*rootSpan)),
+			StartTime:       t.StartTime.Format(time.RFC3339Nano),
+			EndTime:         t.EndTime.Format(time.RFC3339Nano),
+			DurationInNanos: t.DurationNs,
+			SpanCount:       t.SpanCount,
+			TokenUsage:      tokenUsage,
+			Status:          traceStatus,
+			Input:           input,
+			Output:          output,
+		})
 	}
 
-	// Sort by StartTime (descending) for consistent pagination
-	sort.Slice(allOverviews, func(i, j int) bool {
-		return allOverviews[i].StartTime > allOverviews[j].StartTime
-	})
-
-	// Apply pagination to the trace overviews
-	totalCount := len(allOverviews)
-	start := originalOffset
-	end := originalOffset + originalLimit
-
-	if start >= len(allOverviews) {
-		start = len(allOverviews)
-	}
-	if end > len(allOverviews) {
-		end = len(allOverviews)
-	}
-
-	paginatedOverviews := allOverviews[start:end]
-
-	log.Printf("Retrieved %d unique traces from %d spans (showing %d-%d of %d)",
-		len(allOverviews), len(spans), start, end, totalCount)
+	log.Info("Retrieved trace overviews",
+		"totalCount", len(overviews),
+		"returned", len(overviews))
 
 	return &opensearch.TraceOverviewResponse{
-		Traces:     paginatedOverviews,
-		TotalCount: totalCount,
+		Traces:     overviews,
+		TotalCount: tracesResp.Total,
 	}, nil
 }
 
-// GetTraceByIdAndService retrieves spans for a specific trace ID and component UID
-func (s *TracingController) GetTraceByIdAndService(ctx context.Context, params opensearch.TraceByIdAndServiceParams) (*opensearch.TraceResponse, error) {
-	log.Printf("Getting trace for traceID: %s, component: %s, project: %s, environment: %s", params.TraceID, params.ComponentUid, params.ProjectUid, params.EnvironmentUid)
+// GetTraceSpans fetches span summaries for a specific trace (no attributes).
+func (c *TracingController) GetTraceSpans(ctx context.Context, traceID string, params TraceQueryParams) (*SpanListResponse, error) {
+	log := logger.GetLogger(ctx)
 
-	// Build query
-	query := opensearch.BuildTraceByIdAndServiceQuery(params)
+	sortOrder := params.SortOrder
+	req := observer.TracesQueryRequest{
+		StartTime: params.StartTime,
+		EndTime:   params.EndTime,
+		Limit:     &params.Limit,
+		SortOrder: &sortOrder,
+		SearchScope: observer.ComponentSearchScope{
+			Namespace:   params.Organization,
+			Project:     params.Project,
+			Component:   params.Agent,
+			Environment: params.Environment,
+		},
+	}
 
-	// For trace by ID queries, we need to search across a broader time range
-	// Use current day and previous 7 days as default
-	endTime := time.Now()
-	startTime := endTime.AddDate(0, 0, -7)
-	indices, err := opensearch.GetIndicesForTimeRange(
-		startTime.Format(time.RFC3339),
-		endTime.Format(time.RFC3339),
-	)
+	spansResp, err := c.observerClient.QueryTraceSpans(ctx, traceID, req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate indices: %w", err)
-	}
-	log.Printf("Searching indices for trace ID: %v", indices)
-
-	// Execute search
-	response, err := s.osClient.Search(ctx, indices, query)
-	if err != nil {
-		return nil, fmt.Errorf("failed to search traces: %w", err)
+		return nil, err
 	}
 
-	// Parse spans
-	spans := opensearch.ParseSpans(response)
-
-	if len(spans) == 0 {
-		return nil, fmt.Errorf("no spans found for traceID: %s, component: %s, project: %s, environment: %s", params.TraceID, params.ComponentUid, params.ProjectUid, params.EnvironmentUid)
+	summaries := make([]SpanSummary, 0, len(spansResp.Spans))
+	for _, s := range spansResp.Spans {
+		summaries = append(summaries, SpanSummary{
+			SpanID:       s.SpanID,
+			SpanName:     s.SpanName,
+			ParentSpanID: s.ParentSpanID,
+			StartTime:    s.StartTime,
+			EndTime:      s.EndTime,
+			DurationNs:   s.DurationNs,
+		})
 	}
 
-	log.Printf("Retrieved %d spans for traceID: %s, component: %s, project: %s, environment: %s", len(spans), params.TraceID, params.ComponentUid, params.ProjectUid, params.EnvironmentUid)
+	log.Info("Retrieved trace spans",
+		"traceId", traceID,
+		"totalCount", spansResp.Total,
+		"returned", len(summaries))
 
-	return &opensearch.TraceResponse{
-		Spans:      spans,
-		TotalCount: len(spans),
+	return &SpanListResponse{
+		Spans:      summaries,
+		TotalCount: spansResp.Total,
 	}, nil
 }
 
-// HealthCheck checks if the service is healthy
-func (s *TracingController) HealthCheck(ctx context.Context) error {
-	return s.osClient.HealthCheck(ctx)
+// GetSpanDetail fetches full span details including enriched AmpAttributes.
+func (c *TracingController) GetSpanDetail(ctx context.Context, traceID, spanID string) (*opensearch.Span, error) {
+	details, err := c.observerClient.GetSpanDetails(ctx, traceID, spanID)
+	if err != nil {
+		return nil, err
+	}
+
+	span := observer.ConvertSpanDetailsToSpan(traceID, details)
+	enriched := opensearch.ProcessSpan(span)
+	return &enriched, nil
+}
+
+// ExportTraces fetches complete traces with all spans fully enriched for export.
+// Observer calls: 1 QueryTraces + N QueryTraceSpans + N×M GetSpanDetails.
+// Concurrency is bounded: maxConcurrentTraces outer goroutines, maxConcurrentFetches
+// inner span-detail goroutines. Any single failure aborts the entire export.
+func (c *TracingController) ExportTraces(ctx context.Context, params TraceQueryParams) (*opensearch.TraceExportResponse, error) {
+	log := logger.GetLogger(ctx)
+
+	sortOrder := params.SortOrder
+	req := observer.TracesQueryRequest{
+		StartTime: params.StartTime,
+		EndTime:   params.EndTime,
+		Limit:     &params.Limit,
+		SortOrder: &sortOrder,
+		SearchScope: observer.ComponentSearchScope{
+			Namespace:   params.Organization,
+			Project:     params.Project,
+			Component:   params.Agent,
+			Environment: params.Environment,
+		},
+	}
+
+	tracesResp, err := c.observerClient.QueryTraces(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(tracesResp.Traces) == 0 {
+		return &opensearch.TraceExportResponse{
+			Traces:     []opensearch.FullTrace{},
+			TotalCount: tracesResp.Total,
+		}, nil
+	}
+
+	type traceResult struct {
+		idx       int
+		fullTrace *opensearch.FullTrace
+	}
+
+	results := make([]traceResult, len(tracesResp.Traces))
+	var truncated atomic.Bool
+
+	// Fail-fast: first error cancels all in-flight requests.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var firstErr error
+	var errOnce sync.Once
+
+	outerSem := make(chan struct{}, maxConcurrentTraces)
+	innerSem := make(chan struct{}, maxConcurrentFetches)
+	var wg sync.WaitGroup
+
+	for i, t := range tracesResp.Traces {
+		wg.Add(1)
+		go func(idx int, traceInfo observer.TraceInfo) {
+			defer wg.Done()
+
+			outerSem <- struct{}{}
+			defer func() { <-outerSem }()
+
+			if ctx.Err() != nil {
+				return
+			}
+
+			spanLimit := traceInfo.SpanCount
+			if spanLimit <= 0 || spanLimit > MaxSpansPerRequest {
+				spanLimit = MaxSpansPerRequest
+			}
+
+			spansResp, err := c.observerClient.QueryTraceSpans(ctx, traceInfo.TraceID, observer.TracesQueryRequest{
+				StartTime: params.StartTime,
+				EndTime:   params.EndTime,
+				Limit:     &spanLimit,
+				SearchScope: observer.ComponentSearchScope{
+					Namespace:   params.Organization,
+					Project:     params.Project,
+					Component:   params.Agent,
+					Environment: params.Environment,
+				},
+			})
+			if err != nil {
+				errOnce.Do(func() {
+					firstErr = fmt.Errorf("trace %s: query spans: %w", traceInfo.TraceID, err)
+					cancel()
+				})
+				return
+			}
+
+			if traceInfo.SpanCount > MaxSpansPerRequest {
+				truncated.Store(true)
+			}
+
+			// Fetch full details for each span in parallel, bounded by innerSem.
+			type spanResult struct {
+				idx  int
+				span *opensearch.Span
+			}
+			spanResults := make([]spanResult, len(spansResp.Spans))
+			var spanWg sync.WaitGroup
+
+		spanLoop:
+			for j, s := range spansResp.Spans {
+				select {
+				case innerSem <- struct{}{}:
+				case <-ctx.Done():
+					break spanLoop
+				}
+				spanWg.Add(1)
+				go func(spanIdx int, spanID string) {
+					defer spanWg.Done()
+					defer func() { <-innerSem }()
+
+					if ctx.Err() != nil {
+						return
+					}
+
+					details, err := c.observerClient.GetSpanDetails(ctx, traceInfo.TraceID, spanID)
+					if err != nil {
+						errOnce.Do(func() {
+							firstErr = fmt.Errorf("trace %s span %s: get details: %w", traceInfo.TraceID, spanID, err)
+							cancel()
+						})
+						return
+					}
+					enriched := opensearch.ProcessSpan(observer.ConvertSpanDetailsToSpan(traceInfo.TraceID, details))
+					spanResults[spanIdx] = spanResult{idx: spanIdx, span: &enriched}
+				}(j, s.SpanID)
+			}
+			spanWg.Wait()
+
+			if ctx.Err() != nil {
+				return
+			}
+
+			// Collect non-nil spans and sort by start time.
+			spans := make([]opensearch.Span, 0, len(spanResults))
+			for _, sr := range spanResults {
+				if sr.span != nil {
+					spans = append(spans, *sr.span)
+				}
+			}
+			sort.Slice(spans, func(i, j int) bool {
+				return spans[i].StartTime.Before(spans[j].StartTime)
+			})
+
+			// Find root span by the RootSpanID the Observer already identified.
+			// Fallback: also accept a span with an empty or all-zero parentSpanId,
+			// since some OTEL exporters use "0000000000000000" instead of "".
+			var rootSpan *opensearch.Span
+			for k := range spans {
+				if spans[k].SpanID == traceInfo.RootSpanID {
+					rootSpan = &spans[k]
+					break
+				}
+			}
+			if rootSpan == nil {
+				// Fallback for traces where the Observer RootSpanID is absent.
+				for k := range spans {
+					p := spans[k].ParentSpanID
+					if p == "" || p == "0000000000000000" {
+						rootSpan = &spans[k]
+						break
+					}
+				}
+			}
+			if rootSpan == nil {
+				errOnce.Do(func() {
+					firstErr = fmt.Errorf("trace %s: no root span found", traceInfo.TraceID)
+					cancel()
+				})
+				return
+			}
+
+			// Extract input/output
+			var input, output interface{}
+			if opensearch.IsCrewAISpan(rootSpan.Attributes) {
+				input, output = opensearch.ExtractCrewAIRootSpanInputOutput(rootSpan)
+			} else {
+				input, output = opensearch.ExtractRootSpanInputOutput(rootSpan)
+			}
+
+			tokenUsage := opensearch.ExtractTokenUsage(spans)
+			traceStatus := opensearch.ExtractTraceStatus(spans)
+
+			// Extract taskId / trialId from root span baggage attributes.
+			var taskID, trialID string
+			if rootSpan.Attributes != nil {
+				if v, ok := rootSpan.Attributes["task.id"].(string); ok {
+					taskID = v
+				}
+				if v, ok := rootSpan.Attributes["trial.id"].(string); ok {
+					trialID = v
+				}
+			}
+
+			results[idx] = traceResult{
+				idx: idx,
+				fullTrace: &opensearch.FullTrace{
+					TraceID:         traceInfo.TraceID,
+					RootSpanID:      rootSpan.SpanID,
+					RootSpanName:    rootSpan.Name,
+					RootSpanKind:    string(opensearch.DetermineSpanType(*rootSpan)),
+					StartTime:       traceInfo.StartTime.Format(time.RFC3339Nano),
+					EndTime:         traceInfo.EndTime.Format(time.RFC3339Nano),
+					DurationInNanos: traceInfo.DurationNs,
+					SpanCount:       traceInfo.SpanCount,
+					TokenUsage:      tokenUsage,
+					Status:          traceStatus,
+					Input:           input,
+					Output:          output,
+					TaskId:          taskID,
+					TrialId:         trialID,
+					Spans:           spans,
+				},
+			}
+		}(i, t)
+	}
+	wg.Wait()
+
+	if firstErr != nil {
+		return nil, firstErr
+	}
+
+	fullTraces := make([]opensearch.FullTrace, 0, len(results))
+	for _, r := range results {
+		if r.fullTrace != nil {
+			fullTraces = append(fullTraces, *r.fullTrace)
+		}
+	}
+
+	log.Info("Completed trace export",
+		"totalCount", tracesResp.Total,
+		"exported", len(fullTraces),
+		"truncated", truncated.Load())
+
+	return &opensearch.TraceExportResponse{
+		Traces:     fullTraces,
+		TotalCount: tracesResp.Total,
+		Truncated:  truncated.Load(),
+	}, nil
 }

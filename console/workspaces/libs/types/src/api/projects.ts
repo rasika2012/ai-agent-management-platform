@@ -26,6 +26,13 @@ export interface CreateProjectRequest {
   deploymentPipeline: string;
 }
 
+export interface UpdateProjectRequest {
+  name: string;
+  displayName: string;
+  description?: string;
+  deploymentPipeline: string;
+}
+
 // Responses
 export interface ProjectResponse {
   name: string;
@@ -34,6 +41,15 @@ export interface ProjectResponse {
   description: string;
   deploymentPipeline: string;
   createdAt: string; // ISO date-time
+  uuid?: string;
+}
+
+export interface ProjectListItem {
+  name: string;
+  orgName: string;
+  displayName: string;
+  createdAt: string; // ISO date-time
+  uuid?: string;
 }
 
 export interface ProjectListResponse extends PaginationMeta {
@@ -41,8 +57,10 @@ export interface ProjectListResponse extends PaginationMeta {
 }
 
 // Path/Query helpers
-export type ListProjectsPathParams = { orgName: string };
-export type CreateProjectPathParams = { orgName: string };
-export type GetProjectPathParams = { orgName: string; projName: string };
+export type ListProjectsPathParams = { orgName: string | undefined };
+export type CreateProjectPathParams = { orgName: string | undefined };
+export type GetProjectPathParams = { orgName: string | undefined; projName: string | undefined };
 export type ListProjectsQuery = ListQuery;
+export type DeleteProjectPathParams = { orgName: string | undefined; projName: string | undefined };
+export type UpdateProjectPathParams = { orgName: string | undefined; projName: string | undefined };
 

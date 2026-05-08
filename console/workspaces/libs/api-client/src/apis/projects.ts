@@ -16,8 +16,8 @@
  * under the License.
  */
 
-import { httpGET, httpPOST, SERVICE_BASE } from '../utils';
-import {
+import { httpDELETE, httpGET, httpPOST, httpPUT, SERVICE_BASE } from '../utils';
+import type {
   ProjectListResponse,
   ProjectResponse,
   ListProjectsPathParams,
@@ -25,6 +25,9 @@ import {
   ListProjectsQuery,
   CreateProjectPathParams,
   CreateProjectRequest,
+  DeleteProjectPathParams,
+  UpdateProjectPathParams,
+  UpdateProjectRequest,
 } from '@agent-management-platform/types';
 
 export async function listProjects(
@@ -82,3 +85,35 @@ export async function getProject(
   return res.json();
 }
 
+export async function deleteProject(
+    params: DeleteProjectPathParams,
+  getToken?: () => Promise<string>,
+): Promise<void> {
+  const { orgName = "default", projName = "default" } = params;
+  const token = getToken ? await getToken() : undefined;
+  const url =
+    `${SERVICE_BASE}/orgs/${encodeURIComponent(orgName)}` +
+    `/projects/${encodeURIComponent(projName)}`;
+  const res = await httpDELETE(url, { token });
+  if (!res.ok) throw await res.json();
+    // DELETE may return 204 No Content
+  if (res.status === 204 || res.headers.get('content-length') === '0') {
+    return;
+  }
+  return res.json();
+}
+
+export async function updateProject(
+  params: UpdateProjectPathParams,
+  body: UpdateProjectRequest,
+  getToken?: () => Promise<string>,
+): Promise<ProjectResponse> {
+  const { orgName = 'default', projName = 'default' } = params;
+  const token = getToken ? await getToken() : undefined;
+  const url =
+    `${SERVICE_BASE}/orgs/${encodeURIComponent(orgName)}` +
+    `/projects/${encodeURIComponent(projName)}`;
+  const res = await httpPUT(url, body, { token });
+  if (!res.ok) throw await res.json();
+  return res.json();
+}

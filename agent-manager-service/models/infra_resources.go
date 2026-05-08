@@ -19,6 +19,7 @@ package models
 import "time"
 
 type EnvironmentResponse struct {
+	UUID         string    `json:"uuid"`
 	Name         string    `json:"name"`
 	DataplaneRef string    `json:"dataplaneRef"`
 	DisplayName  string    `json:"displayName,omitempty"`
@@ -49,8 +50,7 @@ type PromotionPath struct {
 	TargetEnvironmentRefs []TargetEnvironmentRef `json:"targetEnvironmentRefs"`
 }
 type TargetEnvironmentRef struct {
-	Name             string `json:"name"`
-	RequiresApproval bool   `json:"requiresApproval,omitempty"`
+	Name string `json:"name"`
 }
 
 type LogEntry struct {
@@ -68,8 +68,21 @@ type LogEntry struct {
 	Labels        map[string]string `json:"labels"`
 }
 
-type BuildLogsResponse struct {
+type LogsResponse struct {
 	Logs       []LogEntry `json:"logs"`
 	TotalCount int32      `json:"totalCount"`
 	TookMs     float32    `json:"tookMs"`
+}
+type TimeValuePoint struct {
+	Time  string  `json:"time"`
+	Value float64 `json:"value"`
+}
+
+type MetricsResponse struct {
+	CpuUsage       []TimeValuePoint `json:"cpuUsage"`
+	CpuRequests    []TimeValuePoint `json:"cpuRequests"`
+	CpuLimits      []TimeValuePoint `json:"cpuLimits"`
+	Memory         []TimeValuePoint `json:"memory"`
+	MemoryRequests []TimeValuePoint `json:"memoryRequests"`
+	MemoryLimits   []TimeValuePoint `json:"memoryLimits"`
 }

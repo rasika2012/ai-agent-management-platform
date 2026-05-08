@@ -24,27 +24,33 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/middleware/jwtassertion"
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/middleware/logger"
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/services"
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/spec"
-	"github.com/wso2/ai-agent-management-platform/agent-manager-service/utils"
+	"github.com/wso2/agent-manager/agent-manager-service/middleware/logger"
+	"github.com/wso2/agent-manager/agent-manager-service/services"
+	"github.com/wso2/agent-manager/agent-manager-service/spec"
+	"github.com/wso2/agent-manager/agent-manager-service/utils"
 )
 
 type AgentController interface {
 	ListAgents(w http.ResponseWriter, r *http.Request)
 	GetAgent(w http.ResponseWriter, r *http.Request)
 	CreateAgent(w http.ResponseWriter, r *http.Request)
+	UpdateAgentBasicInfo(w http.ResponseWriter, r *http.Request)
+	UpdateAgentBuildParameters(w http.ResponseWriter, r *http.Request)
 	DeleteAgent(w http.ResponseWriter, r *http.Request)
 	BuildAgent(w http.ResponseWriter, r *http.Request)
 	DeployAgent(w http.ResponseWriter, r *http.Request)
 	ListAgentBuilds(w http.ResponseWriter, r *http.Request)
 	GetAgentDeployments(w http.ResponseWriter, r *http.Request)
+	UpdateDeploymentState(w http.ResponseWriter, r *http.Request)
 	GetAgentEndpoints(w http.ResponseWriter, r *http.Request)
 	GetBuild(w http.ResponseWriter, r *http.Request)
 	GetAgentConfigurations(w http.ResponseWriter, r *http.Request)
 	GetBuildLogs(w http.ResponseWriter, r *http.Request)
 	GenerateName(w http.ResponseWriter, r *http.Request)
+	GetAgentMetrics(w http.ResponseWriter, r *http.Request)
+	GetAgentRuntimeLogs(w http.ResponseWriter, r *http.Request)
+	GetAgentResourceConfigs(w http.ResponseWriter, r *http.Request)
+	UpdateAgentResourceConfigs(w http.ResponseWriter, r *http.Request)
 }
 
 type agentController struct {
@@ -58,6 +64,86 @@ func NewAgentController(agentService services.AgentManagerService) AgentControll
 	}
 }
 
+// handleCommonErrors checks for common resource errors and writes appropriate responses.
+// If no common error matches, writes an internal server error with the provided fallback message.
+func handleCommonErrors(w http.ResponseWriter, err error, fallbackMsg string) {
+	switch {
+	// Not found errors
+	case errors.Is(err, utils.ErrOrganizationNotFound):
+		utils.WriteErrorResponseWithReason(w, http.StatusNotFound,
+			"Organization not found", err.Error(), utils.ErrCodeOrganizationNotFound)
+	case errors.Is(err, utils.ErrProjectNotFound):
+		utils.WriteErrorResponseWithReason(w, http.StatusNotFound,
+			"Project not found", err.Error(), utils.ErrCodeProjectNotFound)
+	case errors.Is(err, utils.ErrAgentNotFound):
+		utils.WriteErrorResponseWithReason(w, http.StatusNotFound,
+			"Agent not found", err.Error(), utils.ErrCodeAgentNotFound)
+	case errors.Is(err, utils.ErrBuildNotFound):
+		utils.WriteErrorResponseWithReason(w, http.StatusNotFound,
+			"Build not found", err.Error(), utils.ErrCodeBuildNotFound)
+	case errors.Is(err, utils.ErrEnvironmentNotFound):
+		utils.WriteErrorResponseWithReason(w, http.StatusNotFound,
+			"Environment not found", err.Error(), utils.ErrCodeEnvironmentNotFound)
+	case errors.Is(err, utils.ErrGitSecretNotFound):
+		utils.WriteErrorResponseWithReason(w, http.StatusNotFound,
+			"Git secret not found", err.Error(), utils.ErrCodeGitSecretNotFound)
+
+	// Conflict errors
+	case errors.Is(err, utils.ErrAgentAlreadyExists):
+		utils.WriteErrorResponseWithReason(w, http.StatusConflict,
+			"Agent already exists", err.Error(), utils.ErrCodeAgentAlreadyExists)
+	case errors.Is(err, utils.ErrProjectAlreadyExists):
+		utils.WriteErrorResponseWithReason(w, http.StatusConflict,
+			"Project already exists", err.Error(), utils.ErrCodeProjectAlreadyExists)
+	case errors.Is(err, utils.ErrProjectHasAssociatedAgents):
+		utils.WriteErrorResponseWithReason(w, http.StatusConflict,
+			"Project has associated agents", err.Error(), utils.ErrCodeConflict)
+	case errors.Is(err, utils.ErrSecretPathConflict):
+		utils.WriteErrorResponseWithReason(w, http.StatusConflict,
+			"Secret path conflict", err.Error(), utils.ErrCodeConflict)
+	case errors.Is(err, utils.ErrGitSecretAlreadyExists):
+		utils.WriteErrorResponseWithReason(w, http.StatusConflict,
+			"Git secret already exists", err.Error(), utils.ErrCodeGitSecretAlreadyExists)
+
+	// Bad request errors
+	case errors.Is(err, utils.ErrInvalidInput):
+		utils.WriteErrorResponseWithReason(w, http.StatusBadRequest,
+			"Invalid input provided", err.Error(), utils.ErrCodeValidation)
+	case errors.Is(err, utils.ErrImmutableFieldChange):
+		utils.WriteErrorResponseWithReason(w, http.StatusBadRequest,
+			"Cannot modify immutable field", err.Error(), utils.ErrCodeImmutableField)
+	case errors.Is(err, utils.ErrBadRequest):
+		utils.WriteErrorResponseWithReason(w, http.StatusBadRequest,
+			"Bad request", err.Error(), utils.ErrCodeBadRequest)
+	case errors.Is(err, utils.ErrDeploymentPipelineNotFound):
+		utils.WriteErrorResponseWithReason(w, http.StatusBadRequest,
+			"Deployment pipeline not found", err.Error(), utils.ErrCodeBadRequest)
+	case errors.Is(err, utils.ErrGitSecretInvalidType):
+		utils.WriteErrorResponseWithReason(w, http.StatusBadRequest,
+			"Invalid git secret type", err.Error(), utils.ErrCodeGitSecretInvalidType)
+	case errors.Is(err, utils.ErrDeploymentInProgress):
+		utils.WriteErrorResponseWithReason(w, http.StatusConflict,
+			"A deployment is already in progress", err.Error(), utils.ErrCodeConflict)
+
+	// Authorization errors
+	case errors.Is(err, utils.ErrUnauthorized):
+		utils.WriteErrorResponseWithReason(w, http.StatusUnauthorized,
+			"Unauthorized", err.Error(), utils.ErrCodeUnauthorized)
+	case errors.Is(err, utils.ErrForbidden):
+		utils.WriteErrorResponseWithReason(w, http.StatusForbidden,
+			"Forbidden", err.Error(), utils.ErrCodeForbidden)
+
+	// Service unavailable
+	case errors.Is(err, utils.ErrServiceUnavailable):
+		utils.WriteErrorResponseWithReason(w, http.StatusServiceUnavailable,
+			"Service temporarily unavailable", err.Error(), utils.ErrCodeServiceUnavailable)
+
+	default:
+		utils.WriteErrorResponseWithReason(w, http.StatusInternalServerError,
+			fallbackMsg, "Internal server error", utils.ErrCodeInternalError)
+	}
+}
+
 func (c *agentController) GetAgent(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	log := logger.GetLogger(ctx)
@@ -66,26 +152,10 @@ func (c *agentController) GetAgent(w http.ResponseWriter, r *http.Request) {
 	projName := r.PathValue(utils.PathParamProjName)
 	agentName := r.PathValue(utils.PathParamAgentName)
 
-	// Extract user info from JWT token
-	tokenClaims := jwtassertion.GetTokenClaims(ctx)
-	userIdpId := tokenClaims.Sub
-
-	agent, err := c.agentService.GetAgent(ctx, userIdpId, orgName, projName, agentName)
+	agent, err := c.agentService.GetAgent(ctx, orgName, projName, agentName)
 	if err != nil {
 		log.Error("GetAgent: failed to get agent", "error", err)
-		if errors.Is(err, utils.ErrOrganizationNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Organization not found")
-			return
-		}
-		if errors.Is(err, utils.ErrProjectNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Project not found")
-			return
-		}
-		if errors.Is(err, utils.ErrAgentNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Agent not found")
-			return
-		}
-		utils.WriteErrorResponse(w, http.StatusInternalServerError, "Failed to get agent")
+		handleCommonErrors(w, err, "Failed to get agent")
 		return
 	}
 
@@ -125,22 +195,10 @@ func (c *agentController) ListAgents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract user info from JWT token
-	tokenClaims := jwtassertion.GetTokenClaims(ctx)
-	userIdpId := tokenClaims.Sub
-
-	agents, total, err := c.agentService.ListAgents(ctx, userIdpId, orgName, projName, int32(limit), int32(offset))
+	agents, total, err := c.agentService.ListAgents(ctx, orgName, projName, int32(limit), int32(offset))
 	if err != nil {
 		log.Error("ListAgents: failed to list agents", "error", err)
-		if errors.Is(err, utils.ErrOrganizationNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Organization not found")
-			return
-		}
-		if errors.Is(err, utils.ErrProjectNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Project not found")
-			return
-		}
-		utils.WriteErrorResponse(w, http.StatusInternalServerError, "Failed to list agents")
+		handleCommonErrors(w, err, "Failed to list agents")
 		return
 	}
 
@@ -163,10 +221,6 @@ func (c *agentController) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	orgName := r.PathValue(utils.PathParamOrgName)
 	projName := r.PathValue(utils.PathParamProjName)
 
-	// Extract user info from JWT token
-	tokenClaims := jwtassertion.GetTokenClaims(ctx)
-	userIdpId := tokenClaims.Sub
-
 	// Parse and validate request body
 	var payload spec.CreateAgentRequest
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -177,26 +231,14 @@ func (c *agentController) CreateAgent(w http.ResponseWriter, r *http.Request) {
 
 	if err := utils.ValidateAgentCreatePayload(payload); err != nil {
 		log.Error("CreateAgent: invalid agent payload", "error", err)
-		utils.WriteErrorResponse(w, http.StatusBadRequest, err.Error())
+		utils.WriteValidationErrorResponse(w, err)
 		return
 	}
 
-	err := c.agentService.CreateAgent(ctx, userIdpId, orgName, projName, &payload)
+	err := c.agentService.CreateAgent(ctx, orgName, projName, &payload)
 	if err != nil {
 		log.Error("CreateAgent: failed to create agent", "error", err)
-		if errors.Is(err, utils.ErrOrganizationNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Organization not found")
-			return
-		}
-		if errors.Is(err, utils.ErrProjectNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Project not found")
-			return
-		}
-		if errors.Is(err, utils.ErrAgentAlreadyExists) {
-			utils.WriteErrorResponse(w, http.StatusConflict, "Agent already exists")
-			return
-		}
-		utils.WriteErrorResponse(w, http.StatusInternalServerError, "Failed to create agent")
+		handleCommonErrors(w, err, "Failed to create agent")
 		return
 	}
 	response := &spec.AgentResponse{
@@ -206,11 +248,138 @@ func (c *agentController) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		ProjectName:    projName,
 		Provisioning:   payload.Provisioning,
 		AgentType:      payload.AgentType,
-		RuntimeConfigs: payload.RuntimeConfigs,
+		Configurations: payload.Configurations,
+		Build:          payload.Build,
 		CreatedAt:      time.Now(),
 	}
 
 	utils.WriteSuccessResponse(w, http.StatusAccepted, response)
+}
+
+func (c *agentController) UpdateAgentBasicInfo(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	log := logger.GetLogger(ctx)
+
+	// Extract path parameters
+	orgName := r.PathValue(utils.PathParamOrgName)
+	projName := r.PathValue(utils.PathParamProjName)
+	agentName := r.PathValue(utils.PathParamAgentName)
+
+	// Parse and validate request body
+	var payload spec.UpdateAgentBasicInfoRequest
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		log.Error("UpdateAgent: failed to decode request body", "error", err)
+		utils.WriteErrorResponse(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if err := utils.ValidateAgentBasicInfoUpdatePayload(payload); err != nil {
+		utils.WriteValidationErrorResponse(w, err)
+		return
+	}
+
+	agent, err := c.agentService.UpdateAgentBasicInfo(ctx, orgName, projName, agentName, &payload)
+	if err != nil {
+		log.Error("UpdateAgent: failed to update agent", "error", err)
+		handleCommonErrors(w, err, "Failed to update agent")
+		return
+	}
+
+	agentResponse := utils.ConvertToAgentResponse(agent)
+	utils.WriteSuccessResponse(w, http.StatusOK, agentResponse)
+}
+
+func (c *agentController) UpdateAgentBuildParameters(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	log := logger.GetLogger(ctx)
+
+	// Extract path parameters
+	orgName := r.PathValue(utils.PathParamOrgName)
+	projName := r.PathValue(utils.PathParamProjName)
+	agentName := r.PathValue(utils.PathParamAgentName)
+
+	// Parse and validate request body
+	var payload spec.UpdateAgentBuildParametersRequest
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		log.Error("UpdateAgentBuildParameters: failed to decode request body", "error", err)
+		utils.WriteErrorResponse(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if err := utils.ValidateAgentBuildParametersUpdatePayload(payload); err != nil {
+		utils.WriteValidationErrorResponse(w, err)
+		return
+	}
+
+	agent, err := c.agentService.UpdateAgentBuildParameters(ctx, orgName, projName, agentName, &payload)
+	if err != nil {
+		log.Error("UpdateAgentBuildParameters: failed to update agent build parameters", "error", err)
+		handleCommonErrors(w, err, "Failed to update agent build parameters")
+		return
+	}
+
+	agentResponse := utils.ConvertToAgentResponse(agent)
+	utils.WriteSuccessResponse(w, http.StatusOK, agentResponse)
+}
+
+func (c *agentController) GetAgentResourceConfigs(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	log := logger.GetLogger(ctx)
+
+	// Extract path parameters
+	orgName := r.PathValue(utils.PathParamOrgName)
+	projName := r.PathValue(utils.PathParamProjName)
+	agentName := r.PathValue(utils.PathParamAgentName)
+	environment := r.URL.Query().Get("environment")
+
+	if environment == "" {
+		utils.WriteErrorResponse(w, http.StatusBadRequest, "environment query parameter is required")
+		return
+	}
+
+	configs, err := c.agentService.GetAgentResourceConfigs(ctx, orgName, projName, agentName, environment)
+	if err != nil {
+		log.Error("GetAgentResourceConfigs: failed to get agent resource configurations", "error", err)
+		handleCommonErrors(w, err, "Failed to get agent resource configurations")
+		return
+	}
+
+	utils.WriteSuccessResponse(w, http.StatusOK, configs)
+}
+
+func (c *agentController) UpdateAgentResourceConfigs(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	log := logger.GetLogger(ctx)
+
+	// Extract path parameters
+	orgName := r.PathValue(utils.PathParamOrgName)
+	projName := r.PathValue(utils.PathParamProjName)
+	agentName := r.PathValue(utils.PathParamAgentName)
+	environment := r.URL.Query().Get("environment")
+
+	if environment == "" {
+		utils.WriteErrorResponse(w, http.StatusBadRequest, "environment query parameter is required")
+		return
+	}
+
+	// Parse and validate request body
+	var payload spec.UpdateAgentResourceConfigsRequest
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		log.Error("UpdateAgentResourceConfigs: failed to decode request body", "error", err)
+		utils.WriteErrorResponse(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if err := utils.ValidateAgentResourceConfigsPayload(payload); err != nil {
+		utils.WriteValidationErrorResponse(w, err)
+		return
+	}
+
+	resourceConfigs, err := c.agentService.UpdateAgentResourceConfigs(ctx, orgName, projName, agentName, environment, &payload)
+	if err != nil {
+		log.Error("UpdateAgentResourceConfigs: failed to update agent resource configurations", "error", err)
+		handleCommonErrors(w, err, "Failed to update agent resource configurations")
+		return
+	}
+
+	utils.WriteSuccessResponse(w, http.StatusOK, resourceConfigs)
 }
 
 func (c *agentController) DeleteAgent(w http.ResponseWriter, r *http.Request) {
@@ -221,22 +390,10 @@ func (c *agentController) DeleteAgent(w http.ResponseWriter, r *http.Request) {
 	projName := r.PathValue(utils.PathParamProjName)
 	agentName := r.PathValue(utils.PathParamAgentName)
 
-	// Extract user info from JWT token
-	tokenClaims := jwtassertion.GetTokenClaims(r.Context())
-	userIdpId := tokenClaims.Sub
-
-	err := c.agentService.DeleteAgent(ctx, userIdpId, orgName, projName, agentName)
+	err := c.agentService.DeleteAgent(ctx, orgName, projName, agentName)
 	if err != nil {
 		log.Error("DeleteAgent: failed to delete agent", "error", err)
-		if errors.Is(err, utils.ErrOrganizationNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Organization not found")
-			return
-		}
-		if errors.Is(err, utils.ErrProjectNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Project not found")
-			return
-		}
-		utils.WriteErrorResponse(w, http.StatusInternalServerError, "Failed to delete agent")
+		handleCommonErrors(w, err, "Failed to delete agent")
 		return
 	}
 	utils.WriteSuccessResponse(w, http.StatusNoContent, "")
@@ -256,27 +413,10 @@ func (c *agentController) BuildAgent(w http.ResponseWriter, r *http.Request) {
 	if commitId == "" {
 		log.Debug("BuildAgent: commitId not provided, using latest commit")
 	}
-
-	// Extract user info from JWT token
-	tokenClaims := jwtassertion.GetTokenClaims(r.Context())
-	userIdpId := tokenClaims.Sub
-
-	build, err := c.agentService.BuildAgent(ctx, userIdpId, orgName, projName, agentName, commitId)
+	build, err := c.agentService.BuildAgent(ctx, orgName, projName, agentName, commitId)
 	if err != nil {
 		log.Error("BuildAgent: failed to build agent", "error", err)
-		if errors.Is(err, utils.ErrOrganizationNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Organization not found")
-			return
-		}
-		if errors.Is(err, utils.ErrProjectNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Project not found")
-			return
-		}
-		if errors.Is(err, utils.ErrAgentNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Agent not found")
-			return
-		}
-		utils.WriteErrorResponse(w, http.StatusInternalServerError, "Failed to build agent")
+		handleCommonErrors(w, err, "Failed to build agent")
 		return
 	}
 	utils.WriteSuccessResponse(w, http.StatusAccepted, build)
@@ -292,33 +432,79 @@ func (c *agentController) GetBuildLogs(w http.ResponseWriter, r *http.Request) {
 	agentName := r.PathValue(utils.PathParamAgentName)
 	buildName := r.PathValue(utils.PathParamBuildName)
 
-	// Extract user info from JWT token
-	tokenClaims := jwtassertion.GetTokenClaims(ctx)
-	userIdpId := tokenClaims.Sub
-	buildLogs, err := c.agentService.GetBuildLogs(ctx, userIdpId, orgName, projName, agentName, buildName)
+	buildLogs, err := c.agentService.GetBuildLogs(ctx, orgName, projName, agentName, buildName)
 	if err != nil {
 		log.Error("GetBuildLogs: failed to get build logs", "error", err)
-		if errors.Is(err, utils.ErrOrganizationNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Organization not found")
-			return
-		}
-		if errors.Is(err, utils.ErrProjectNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Project not found")
-			return
-		}
-		if errors.Is(err, utils.ErrAgentNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Agent not found")
-			return
-		}
-		if errors.Is(err, utils.ErrBuildNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Build not found")
-			return
-		}
-		utils.WriteErrorResponse(w, http.StatusInternalServerError, "Failed to get build logs")
+		handleCommonErrors(w, err, "Failed to get build logs")
 		return
 	}
-	buildLogsResponse := utils.ConvertToBuildLogsResponse(*buildLogs)
+	buildLogsResponse := utils.ConvertToLogsResponse(*buildLogs)
 	utils.WriteSuccessResponse(w, http.StatusOK, buildLogsResponse)
+}
+
+func (c *agentController) GetAgentRuntimeLogs(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	log := logger.GetLogger(ctx)
+
+	// Extract path parameters
+	orgName := r.PathValue(utils.PathParamOrgName)
+	projName := r.PathValue(utils.PathParamProjName)
+	agentName := r.PathValue(utils.PathParamAgentName)
+
+	// Parse and validate request body
+	var payload spec.LogFilterRequest
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		log.Error("GetAgentRuntimeLogs: failed to decode request body", "error", err)
+		utils.WriteErrorResponse(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if err := utils.ValidateLogFilterRequest(payload); err != nil {
+		log.Error("GetAgentRuntimeLogs: invalid request payload", "error", err)
+		utils.WriteValidationErrorResponse(w, err)
+		return
+	}
+
+	applicationLogs, err := c.agentService.GetAgentRuntimeLogs(ctx, orgName, projName, agentName, payload)
+	if err != nil {
+		log.Error("GetAgentRuntimeLogs: failed to get run-time logs", "error", err)
+		handleCommonErrors(w, err, "Failed to get run-time logs")
+		return
+	}
+	buildLogsResponse := utils.ConvertToLogsResponse(*applicationLogs)
+	utils.WriteSuccessResponse(w, http.StatusOK, buildLogsResponse)
+}
+
+func (c *agentController) GetAgentMetrics(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	log := logger.GetLogger(ctx)
+
+	// Extract path parameters
+	orgName := r.PathValue(utils.PathParamOrgName)
+	projName := r.PathValue(utils.PathParamProjName)
+	agentName := r.PathValue(utils.PathParamAgentName)
+
+	// Parse and validate request body
+	var payload spec.MetricsFilterRequest
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		log.Error("GetAgentMetrics: failed to decode request body", "error", err)
+		utils.WriteErrorResponse(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if err := utils.ValidateMetricsFilterRequest(payload); err != nil {
+		log.Error("GetAgentMetrics: invalid request payload", "error", err)
+		utils.WriteValidationErrorResponse(w, err)
+		return
+	}
+
+	metricsResponse, err := c.agentService.GetAgentMetrics(ctx, orgName, projName, agentName, payload)
+	if err != nil {
+		log.Error("GetAgentMetrics: failed to get agent metrics", "error", err)
+		handleCommonErrors(w, err, "Failed to get agent metrics")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, metricsResponse)
 }
 
 func (c *agentController) DeployAgent(w http.ResponseWriter, r *http.Request) {
@@ -330,10 +516,6 @@ func (c *agentController) DeployAgent(w http.ResponseWriter, r *http.Request) {
 	projName := r.PathValue(utils.PathParamProjName)
 	agentName := r.PathValue(utils.PathParamAgentName)
 
-	// Extract user info from JWT token
-	tokenClaims := jwtassertion.GetTokenClaims(ctx)
-	userIdpId := tokenClaims.Sub
-
 	// Parse and validate request body
 	var payload spec.DeployAgentRequest
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -342,28 +524,16 @@ func (c *agentController) DeployAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if payload.ImageId == "" {
-		log.Error("DeployAgent: imageId is required in request body")
-		utils.WriteErrorResponse(w, http.StatusBadRequest, "Invalid request body")
+	if err := utils.ValidateDeployAgentRequest(&payload); err != nil {
+		log.Error("DeployAgent: invalid request", "error", err)
+		utils.WriteValidationErrorResponse(w, err)
 		return
 	}
 
-	deployedEnv, err := c.agentService.DeployAgent(ctx, userIdpId, orgName, projName, agentName, &payload)
+	deployedEnv, err := c.agentService.DeployAgent(ctx, orgName, projName, agentName, &payload)
 	if err != nil {
 		log.Error("DeployAgent: failed to deploy agent", "error", err)
-		if errors.Is(err, utils.ErrOrganizationNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Organization not found")
-			return
-		}
-		if errors.Is(err, utils.ErrProjectNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Project not found")
-			return
-		}
-		if errors.Is(err, utils.ErrAgentNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Agent not found")
-			return
-		}
-		utils.WriteErrorResponse(w, http.StatusInternalServerError, "Failed to deploy agent")
+		handleCommonErrors(w, err, "Failed to deploy agent")
 		return
 	}
 
@@ -410,26 +580,10 @@ func (c *agentController) ListAgentBuilds(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Extract user info from JWT token
-	tokenClaims := jwtassertion.GetTokenClaims(ctx)
-	userIdpId := tokenClaims.Sub
-
-	builds, total, err := c.agentService.ListAgentBuilds(ctx, userIdpId, orgName, projName, agentName, int32(limit), int32(offset))
+	builds, total, err := c.agentService.ListAgentBuilds(ctx, orgName, projName, agentName, int32(limit), int32(offset))
 	if err != nil {
 		log.Error("ListAgentBuilds: failed to list agent builds", "error", err)
-		if errors.Is(err, utils.ErrOrganizationNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Organization not found")
-			return
-		}
-		if errors.Is(err, utils.ErrProjectNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Project not found")
-			return
-		}
-		if errors.Is(err, utils.ErrAgentNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Agent not found")
-			return
-		}
-		utils.WriteErrorResponse(w, http.StatusInternalServerError, "Failed to list agent builds")
+		handleCommonErrors(w, err, "Failed to list agent builds")
 		return
 	}
 
@@ -450,11 +604,6 @@ func (c *agentController) GenerateName(w http.ResponseWriter, r *http.Request) {
 
 	// Extract path parameters
 	orgName := r.PathValue(utils.PathParamOrgName)
-
-	// Extract user info from JWT token
-	tokenClaims := jwtassertion.GetTokenClaims(ctx)
-	userIdpId := tokenClaims.Sub
-
 	// Parse and validate request body
 	var payload spec.ResourceNameRequest
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -470,18 +619,10 @@ func (c *agentController) GenerateName(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	candidateName, err := c.agentService.GenerateName(ctx, userIdpId, orgName, payload)
+	candidateName, err := c.agentService.GenerateName(ctx, orgName, payload)
 	if err != nil {
 		log.Error("GenerateAgentName: failed to generate agent name", "error", err)
-		if errors.Is(err, utils.ErrOrganizationNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Organization not found")
-			return
-		}
-		if errors.Is(err, utils.ErrProjectNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Project not found")
-			return
-		}
-		utils.WriteErrorResponse(w, http.StatusInternalServerError, "Failed to check agent name availability")
+		handleCommonErrors(w, err, "Failed to check agent name availability")
 		return
 	}
 
@@ -503,30 +644,10 @@ func (c *agentController) GetBuild(w http.ResponseWriter, r *http.Request) {
 	agentName := r.PathValue(utils.PathParamAgentName)
 	buildName := r.PathValue(utils.PathParamBuildName)
 
-	// Extract user info from JWT token
-	tokenClaims := jwtassertion.GetTokenClaims(ctx)
-	userIdpId := tokenClaims.Sub
-
-	build, err := c.agentService.GetBuild(ctx, userIdpId, orgName, projName, agentName, buildName)
+	build, err := c.agentService.GetBuild(ctx, orgName, projName, agentName, buildName)
 	if err != nil {
 		log.Error("GetBuild: failed to get build", "error", err)
-		if errors.Is(err, utils.ErrOrganizationNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Organization not found")
-			return
-		}
-		if errors.Is(err, utils.ErrProjectNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Project not found")
-			return
-		}
-		if errors.Is(err, utils.ErrAgentNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Agent not found")
-			return
-		}
-		if errors.Is(err, utils.ErrBuildNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Build not found")
-			return
-		}
-		utils.WriteErrorResponse(w, http.StatusInternalServerError, "Failed to get build")
+		handleCommonErrors(w, err, "Failed to get build")
 		return
 	}
 
@@ -543,31 +664,66 @@ func (c *agentController) GetAgentDeployments(w http.ResponseWriter, r *http.Req
 	projName := r.PathValue(utils.PathParamProjName)
 	agentName := r.PathValue(utils.PathParamAgentName)
 
-	// Extract user info from JWT token
-	tokenClaims := jwtassertion.GetTokenClaims(ctx)
-	userIdpId := tokenClaims.Sub
-
-	deployments, err := c.agentService.GetAgentDeployments(ctx, userIdpId, orgName, projName, agentName)
+	deployments, err := c.agentService.GetAgentDeployments(ctx, orgName, projName, agentName)
 	if err != nil {
 		log.Error("GetAgentDeployments: failed to get deployments", "error", err)
-		if errors.Is(err, utils.ErrOrganizationNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Organization not found")
-			return
-		}
-		if errors.Is(err, utils.ErrProjectNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Project not found")
-			return
-		}
-		if errors.Is(err, utils.ErrAgentNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Agent not found")
-			return
-		}
-		utils.WriteErrorResponse(w, http.StatusInternalServerError, "Failed to get deployments")
+		handleCommonErrors(w, err, "Failed to get deployments")
 		return
 	}
 
 	deploymentResponses := utils.ConvertToDeploymentDetailsResponse(deployments)
 	utils.WriteSuccessResponse(w, http.StatusOK, deploymentResponses)
+}
+
+func (c *agentController) UpdateDeploymentState(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	log := logger.GetLogger(ctx)
+
+	// Extract path parameters
+	orgName := r.PathValue(utils.PathParamOrgName)
+	projName := r.PathValue(utils.PathParamProjName)
+	agentName := r.PathValue(utils.PathParamAgentName)
+
+	// Parse and validate request body
+	var payload spec.UpdateDeploymentStateRequest
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		log.Error("UpdateDeploymentState: failed to decode request body", "error", err)
+		utils.WriteErrorResponse(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	// Validate required fields
+	if payload.Environment == "" {
+		log.Error("UpdateDeploymentState: missing required field 'environment'")
+		utils.WriteErrorResponse(w, http.StatusBadRequest, "Missing required field 'environment'")
+		return
+	}
+	if payload.State == "" {
+		log.Error("UpdateDeploymentState: missing required field 'state'")
+		utils.WriteErrorResponse(w, http.StatusBadRequest, "Missing required field 'state'")
+		return
+	}
+
+	// Validate state value
+	if payload.State != utils.DeploymentStateActive && payload.State != utils.DeploymentStateUndeploy {
+		log.Error("UpdateDeploymentState: invalid state value", "state", payload.State)
+		utils.WriteErrorResponse(w, http.StatusBadRequest, "Invalid state value: must be 'Active' or 'Undeploy'")
+		return
+	}
+
+	err := c.agentService.UpdateAgentDeploymentState(ctx, orgName, projName, agentName, payload.Environment, payload.State)
+	if err != nil {
+		log.Error("UpdateDeploymentState: failed to update deployment state", "error", err)
+		handleCommonErrors(w, err, "Failed to update deployment state")
+		return
+	}
+
+	response := spec.UpdateDeploymentStateResponse{
+		Message:     "Deployment state transition request accepted",
+		Environment: payload.Environment,
+		State:       payload.State,
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, response)
 }
 
 func (c *agentController) GetAgentEndpoints(w http.ResponseWriter, r *http.Request) {
@@ -585,26 +741,10 @@ func (c *agentController) GetAgentEndpoints(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Extract user info from JWT token
-	tokenClaims := jwtassertion.GetTokenClaims(ctx)
-	userIdpId := tokenClaims.Sub
-
-	endpoints, err := c.agentService.GetAgentEndpoints(ctx, userIdpId, orgName, projName, agentName, environment)
+	endpoints, err := c.agentService.GetAgentEndpoints(ctx, orgName, projName, agentName, environment)
 	if err != nil {
 		log.Error("GetAgentEndpoints: failed to get agent endpoints", "error", err)
-		if errors.Is(err, utils.ErrOrganizationNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Organization not found")
-			return
-		}
-		if errors.Is(err, utils.ErrProjectNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Project not found")
-			return
-		}
-		if errors.Is(err, utils.ErrAgentNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Agent not found")
-			return
-		}
-		utils.WriteErrorResponse(w, http.StatusInternalServerError, "Failed to get agent endpoints")
+		handleCommonErrors(w, err, "Failed to get agent endpoints")
 		return
 	}
 
@@ -628,35 +768,27 @@ func (c *agentController) GetAgentConfigurations(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// Extract user info from JWT token
-	tokenClaims := jwtassertion.GetTokenClaims(ctx)
-	userIdpId := tokenClaims.Sub
-
-	configurations, err := c.agentService.GetAgentConfigurations(ctx, userIdpId, orgName, projName, agentName, environment)
+	configurations, err := c.agentService.GetAgentConfigurations(ctx, orgName, projName, agentName, environment)
 	if err != nil {
 		log.Error("GetAgentConfigurations: failed to get configurations", "error", err)
-		if errors.Is(err, utils.ErrOrganizationNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Organization not found")
-			return
-		}
-		if errors.Is(err, utils.ErrProjectNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Project not found")
-			return
-		}
-		if errors.Is(err, utils.ErrAgentNotFound) {
-			utils.WriteErrorResponse(w, http.StatusNotFound, "Agent not found")
-			return
-		}
-		utils.WriteErrorResponse(w, http.StatusInternalServerError, "Failed to get configurations")
+		handleCommonErrors(w, err, "Failed to get configurations")
 		return
 	}
 
 	// Convert configurations to response format
 	configurationItems := make([]spec.ConfigurationItem, len(configurations))
 	for i, config := range configurations {
+		value := config.Value
+		var secretRef *string
+		if config.IsSensitive {
+			value = "" // redact sensitive values in the response for extra layer of security
+			secretRef = &config.SecretRef
+		}
 		configurationItems[i] = spec.ConfigurationItem{
-			Key:   config.Key,
-			Value: config.Value,
+			Key:         config.Key,
+			Value:       value,
+			IsSensitive: spec.PtrBool(config.IsSensitive),
+			SecretRef:   secretRef,
 		}
 	}
 

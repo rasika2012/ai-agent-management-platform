@@ -17,7 +17,7 @@
  */
 
 import { httpGET, httpPOST, SERVICE_BASE } from "../utils";
-import {
+import type {
   BuildAgentPathParams,
   BuildAgentQuery,
   BuildResponse,
@@ -36,6 +36,11 @@ export async function buildAgent(
   getToken?: () => Promise<string>
 ): Promise<BuildResponse> {
   const { orgName = "default", projName = "default", agentName } = params;
+  
+  if (!agentName) {
+    throw new Error("agentName is required");
+  }
+  
   const token = getToken ? await getToken() : undefined;
   const res = await httpPOST(
     `${SERVICE_BASE}/orgs/${encodeURIComponent(
@@ -59,6 +64,11 @@ export async function getAgentBuilds(
   getToken?: () => Promise<string>
 ): Promise<BuildsListResponse> {
   const { orgName = "default", projName = "default", agentName } = params;
+  
+  if (!agentName) {
+    throw new Error("agentName is required");
+  }
+  
   const search = query
     ? Object.fromEntries(
         Object.entries(query)
@@ -80,7 +90,7 @@ export async function getAgentBuilds(
   return res.json();
 }
 
-// eslint-disable-next-line max-len
+ 
 export async function getBuild(
   params: GetBuildPathParams,
   getToken?: () => Promise<string>
@@ -91,6 +101,14 @@ export async function getBuild(
     agentName,
     buildName,
   } = params;
+  
+  if (!agentName) {
+    throw new Error("agentName is required");
+  }
+  if (!buildName) {
+    throw new Error("buildName is required");
+  }
+  
   const token = getToken ? await getToken() : undefined;
   const res = await httpGET(
     `${SERVICE_BASE}/orgs/${encodeURIComponent(
@@ -114,6 +132,14 @@ export async function getBuildLogs(
     agentName,
     buildName,
   } = params;
+  
+  if (!agentName) {
+    throw new Error("agentName is required");
+  }
+  if (!buildName) {
+    throw new Error("buildName is required");
+  }
+  
   const token = getToken ? await getToken() : undefined;
   const res = await httpGET(
     `${SERVICE_BASE}/orgs/${encodeURIComponent(
