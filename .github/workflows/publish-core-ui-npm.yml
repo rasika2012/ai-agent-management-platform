@@ -12,14 +12,23 @@ on:
         description: "Version to publish (e.g., 0.0.1, 0.0.1-rc.1)"
         required: true
         type: string
+      npm_scope:
+        description: "NPM scope for publishing (e.g., @rasika2012 or @wso2)"
+        required: false
+        default: "@rasika2012"
+        type: string
+      runner:
+        description: "Runner label (use ubuntu-latest for fork testing)"
+        required: false
+        default: "ubuntu-latest"
+        type: string
 
 run-name: Publish core-ui ${{ inputs.target_version }}
 
 jobs:
   publish-core-ui-npm:
     name: Publish core-ui to npm
-    runs-on:
-      - codebuild-wso2_agent-manager-${{ github.run_id }}-${{ github.run_attempt }}
+    runs-on: ${{ inputs.runner }}
     permissions:
       contents: read
       packages: write
@@ -44,7 +53,7 @@ jobs:
         with:
           node-version: 20
           registry-url: https://npm.pkg.github.com
-          scope: "@wso2"
+          scope: ${{ inputs.npm_scope }}
 
       - name: Install monorepo dependencies
         run: |
@@ -56,7 +65,17 @@ jobs:
       - name: Build core-ui package
         run: |
           cd console
-          node common/scripts/install-run-rush.js build --to @wso2/amp-core-ui
+          PACKAGE_NAME=$(node -p "require('./workspaces/core-ui/package.json').name")
+          node common/scripts/install-run-rush.js build --to "$PACKAGE_NAME"
+        shell: bash
+
+      - name: Set package scope for fork publish
+        run: |
+          cd console/workspaces/core-ui
+          PACKAGE_BASENAME=$(node -p "require('./package.json').name.split('/')[1]")
+          npm pkg set name="${NPM_SCOPE}/${PACKAGE_BASENAME}"
+        env:
+          NPM_SCOPE: ${{ inputs.npm_scope }}
         shell: bash
 
       - name: Set core-ui package version from release
