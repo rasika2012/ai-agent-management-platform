@@ -1,0 +1,81 @@
+name: Publish core-ui to npm
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Branch, tag, or commit SHA to publish from"
+        required: false
+        default: "main"
+        type: string
+      target_version:
+        description: "Version to publish (e.g., 0.0.1, 0.0.1-rc.1)"
+        required: true
+        type: string
+
+run-name: Publish core-ui ${{ inputs.target_version }}
+
+jobs:
+  publish-core-ui-npm:
+    name: Publish core-ui to npm
+    runs-on:
+      - codebuild-wso2_agent-manager-${{ github.run_id }}-${{ github.run_attempt }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Validate target version
+        run: |
+          if [[ ! "$TARGET_RELEASE" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "Error: Invalid target_version format. Expected: X.Y.Z or X.Y.Z-suffix"
+            exit 1
+          fi
+        env:
+          TARGET_RELEASE: ${{ inputs.target_version }}
+        shell: bash
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+
+      - name: Setup Node.js for GitHub Package Registry
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://npm.pkg.github.com
+          scope: "@wso2"
+
+      - name: Install monorepo dependencies
+        run: |
+          cd console
+          corepack enable
+          node common/scripts/install-run-rush.js install --bypass-policy
+        shell: bash
+
+      - name: Build core-ui package
+        run: |
+          cd console
+          node common/scripts/install-run-rush.js build --to @wso2/amp-core-ui
+        shell: bash
+
+      - name: Set core-ui package version from release
+        run: |
+          cd console/workspaces/core-ui
+          npm version "$TARGET_RELEASE" --no-git-tag-version --allow-same-version
+        env:
+          TARGET_RELEASE: ${{ inputs.target_version }}
+        shell: bash
+
+      - name: Publish core-ui package
+        run: |
+          cd console/workspaces/core-ui
+          DIST_TAG="latest"
+          if [[ "$TARGET_RELEASE" == *"-rc"* ]]; then
+            DIST_TAG="next"
+          fi
+          npm publish --access public --tag "$DIST_TAG"
+        env:
+          TARGET_RELEASE: ${{ inputs.target_version }}
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
