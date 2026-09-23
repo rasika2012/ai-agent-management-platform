@@ -187,7 +187,7 @@ func (p *LLMProxyProvisioner) ProvisionProxy(ctx context.Context, params Provisi
 				Enabled: &enabled,
 				APIKey: &models.APIKeySecurity{
 					Enabled: &enabled,
-					Key:     "API-Key",
+					Key:     models.DefaultLLMProxyAPIKeyHeader,
 					In:      "header",
 				},
 			},

@@ -482,6 +482,20 @@ func mcpProxyAPIKeySecurityEnabled(proxy *models.MCPProxy, envID string) bool {
 	return security.APIKey != nil && isBoolTrue(security.APIKey.Enabled)
 }
 
+// llmProxyAPIKeyHeaderName returns the header the agent must send its credential in
+// when calling the given LLM proxy. Unlike an MCP proxy, an LLM proxy stores its
+// security config on the proxy itself rather than per bound environment.
+func llmProxyAPIKeyHeaderName(proxy *models.LLMProxy) string {
+	if proxy == nil || proxy.Configuration.Security == nil || proxy.Configuration.Security.APIKey == nil {
+		return models.DefaultLLMProxyAPIKeyHeader
+	}
+	header := strings.TrimSpace(proxy.Configuration.Security.APIKey.Key)
+	if header == "" {
+		return models.DefaultLLMProxyAPIKeyHeader
+	}
+	return header
+}
+
 func mcpProxyAPIKeyHeaderName(proxy *models.MCPProxy, envID string) string {
 	security := mcpProxySecurityForEnv(proxy, envID)
 	if security == nil || security.APIKey == nil {
@@ -4298,7 +4312,7 @@ func (s *agentConfigurationService) buildLLMProxyConfig(
 				Enabled: &enabled,
 				APIKey: &models.APIKeySecurity{
 					Enabled: &enabled,
-					Key:     "API-Key",
+					Key:     models.DefaultLLMProxyAPIKeyHeader,
 					In:      "header",
 				},
 			},
@@ -5260,11 +5274,12 @@ func (s *agentConfigurationService) buildConfigResponse(ctx context.Context, con
 		if mapping.LLMProxy != nil {
 			providerUUID := mapping.LLMProxy.ProviderUUID.String()
 			proxyInfo = &models.LLMProxyInfo{
-				ProxyUUID:    utils.StrAsStrPointer(mapping.LLMProxy.UUID.String()),
-				ProxyName:    utils.StrAsStrPointer(mapping.LLMProxy.Handle),
-				ProviderUUID: utils.StrAsStrPointer(providerUUID),
-				Policies:     mapping.PolicyConfiguration,
-				Resilience:   mapping.LLMProxy.Configuration.Resilience,
+				ProxyUUID:      utils.StrAsStrPointer(mapping.LLMProxy.UUID.String()),
+				ProxyName:      utils.StrAsStrPointer(mapping.LLMProxy.Handle),
+				ProviderUUID:   utils.StrAsStrPointer(providerUUID),
+				AuthHeaderName: utils.StrAsStrPointer(llmProxyAPIKeyHeaderName(mapping.LLMProxy)),
+				Policies:       mapping.PolicyConfiguration,
+				Resilience:     mapping.LLMProxy.Configuration.Resilience,
 			}
 			if provider, err := s.llmProviderRepo.GetByUUID(providerUUID, config.OUID); err == nil {
 				if provider.Artifact != nil {
@@ -5395,11 +5410,12 @@ func (s *agentConfigurationService) buildExternalAgentConfigResponse(
 		if mapping.LLMProxy != nil {
 			providerUUID := mapping.LLMProxy.ProviderUUID.String()
 			proxyInfo = &models.LLMProxyInfo{
-				ProxyUUID:    utils.StrAsStrPointer(mapping.LLMProxy.UUID.String()),
-				ProxyName:    utils.StrAsStrPointer(mapping.LLMProxy.Handle),
-				ProviderUUID: utils.StrAsStrPointer(providerUUID),
-				Policies:     mapping.PolicyConfiguration,
-				Resilience:   mapping.LLMProxy.Configuration.Resilience,
+				ProxyUUID:      utils.StrAsStrPointer(mapping.LLMProxy.UUID.String()),
+				ProxyName:      utils.StrAsStrPointer(mapping.LLMProxy.Handle),
+				ProviderUUID:   utils.StrAsStrPointer(providerUUID),
+				AuthHeaderName: utils.StrAsStrPointer(llmProxyAPIKeyHeaderName(mapping.LLMProxy)),
+				Policies:       mapping.PolicyConfiguration,
+				Resilience:     mapping.LLMProxy.Configuration.Resilience,
 			}
 			if provider, err := s.llmProviderRepo.GetByUUID(providerUUID, config.OUID); err == nil {
 				if provider.Artifact != nil {

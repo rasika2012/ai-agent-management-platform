@@ -89,3 +89,10 @@ const LLMProviderStatusDeleting = "DELETING"
 const (
 	DefaultProxyVersion = "1.0.0"
 )
+
+// DefaultLLMProxyAPIKeyHeader is the header an agent sends its gateway credential
+// in when calling the LLM proxy provisioned for it. It matches the name MCP proxies
+// and the gateway's own CORS defaults already use. Proxies provisioned before this
+// was aligned stored "API-Key"; their stored value is what gets reported and
+// enforced, so they keep working unchanged.
+const DefaultLLMProxyAPIKeyHeader = "X-API-Key"

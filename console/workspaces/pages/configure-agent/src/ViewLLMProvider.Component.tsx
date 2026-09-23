@@ -90,10 +90,14 @@ function generateDisplayName(key: string): string {
 function getClientSetupSnippet(
   templateId: string | undefined,
   varKeys: string[],
+  authHeaderName: string | undefined,
 ): { importLine: string; setup: string } | null {
-  if (!templateId) return null;
+  if (!templateId || !authHeaderName) return null;
   const urlKey = varKeys.find((k) => /url/i.test(k));
   const apiKeyKey = varKeys.find((k) => /key/i.test(k));
+  // Every snippet authenticates with this variable; without it they would render
+  // `api_key=undefined` and fail on paste, so show no snippet at all instead.
+  if (!apiKeyKey) return null;
 
   const build = (
     importLine: string,
@@ -105,18 +109,29 @@ function getClientSetupSnippet(
 
   switch (templateId) {
     case "openai":
+      // api_key must be a real (non-empty) value or the SDK refuses to
+      // construct the client ("Missing credentials"); the actual gateway auth
+      // is the separate authHeaderName header, so what value the SDK's own
+      // Authorization header carries doesn't matter — reusing apiKeyKey
+      // satisfies the SDK without a second secret.
       return build("from openai import OpenAI", [
         "client = OpenAI(",
         urlKey ? `    base_url=${urlKey},` : null,
-        `    api_key="",`,
-        `    default_headers={"API-Key": ${apiKeyKey}, "Authorization": ""}`,
+        `    api_key=${apiKeyKey},`,
+        `    default_headers={"${authHeaderName}": ${apiKeyKey}},`,
         ")",
       ]);
     case "anthropic":
+      // Anthropic's SDK validates that an auth method (api_key/auth_token) is
+      // set, or that its own x-api-key/Authorization headers are explicitly
+      // omitted — an empty-string override satisfies neither and raises
+      // "Could not resolve authentication method" on every request. Passing a
+      // real api_key sidesteps that; the gateway only checks authHeaderName.
       return build("from anthropic import Anthropic", [
         "client = Anthropic(",
         urlKey ? `    base_url=${urlKey},` : null,
-        `    default_headers={"API-Key": ${apiKeyKey}, "Authorization": ""}`,
+        `    api_key=${apiKeyKey},`,
+        `    default_headers={"${authHeaderName}": ${apiKeyKey}},`,
         ")",
       ]);
     case "azure-openai":
@@ -124,25 +139,31 @@ function getClientSetupSnippet(
       return build("from openai import AzureOpenAI", [
         "client = AzureOpenAI(",
         urlKey ? `    azure_endpoint=${urlKey},` : null,
-        `    api_key="",`,
-        `    default_headers={"API-Key": ${apiKeyKey}, "Authorization": ""}`,
+        `    api_version="2024-02-01",  # match your Azure OpenAI deployment's API version`,
+        `    api_key=${apiKeyKey},`,
+        `    default_headers={"${authHeaderName}": ${apiKeyKey}},`,
         ")",
       ]);
     case "mistralai":
       return build("import httpx\nfrom mistralai import Mistral", [
-        `_http_client = httpx.Client(headers={"API-Key": ${apiKeyKey}, "Authorization": ""})`,
+        `_http_client = httpx.Client(headers={"${authHeaderName}": ${apiKeyKey}})`,
         "client = Mistral(",
         urlKey ? `    server_url=${urlKey},` : null,
+        `    api_key=${apiKeyKey},`,
         "    client=_http_client,",
         ")",
       ]);
     case "gemini":
+      // genai.Client requires api_key to be set even when auth is really
+      // carried by the custom header below — otherwise it raises
+      // "No API key was provided" before a request is ever made.
       return build("from google import genai\nfrom google.genai import types", [
         urlKey
-          ? `_http_options = types.HttpOptions(base_url=${urlKey}, client_args={"headers": {"API-Key": ${apiKeyKey}, "Authorization": ""}})`
-          : `_http_options = types.HttpOptions(client_args={"headers": {"API-Key": ${apiKeyKey}, "Authorization": ""}})`,
+          ? `_http_options = types.HttpOptions(base_url=${urlKey}, client_args={"headers": {"${authHeaderName}": ${apiKeyKey}}})`
+          : `_http_options = types.HttpOptions(client_args={"headers": {"${authHeaderName}": ${apiKeyKey}}})`,
         "client = genai.Client(",
-        `    http_options=_http_options`,
+        `    api_key=${apiKeyKey},`,
+        `    http_options=_http_options,`,
         ")",
       ]);
     case "awsbedrock":
@@ -153,7 +174,7 @@ function getClientSetupSnippet(
         `    config=Config(signature_version=UNSIGNED),`,
         ")",
         `def _add_headers(request, **kwargs):`,
-        `    request.headers["API-Key"] = ${apiKeyKey}`,
+        `    request.headers["${authHeaderName}"] = ${apiKeyKey}`,
         `    request.headers["Authorization"] = ""`,
         `client.meta.events.register("before-send", _add_headers)`,
       ]);
@@ -754,6 +775,12 @@ export const ViewLLMProviderComponent: React.FC = () => {
 
   const apiKeyValue = providerConfig?.authInfo?.value;
 
+  // The header the agent's own client must send its credential in. Only the
+  // server knows it — it is stored per proxy and differs for proxies created
+  // before the name was aligned — so an absent value stays absent rather than
+  // being guessed at; callers below render nothing instead.
+  const authHeaderName = providerConfig?.authInfo?.name;
+
   const pageTitle =
     config.name || catalogProvider?.name || providerConfig?.providerName;
 
@@ -780,6 +807,24 @@ export const ViewLLMProviderComponent: React.FC = () => {
             Copy the snippet below into your agent code. The environment variables will be
             injected automatically at runtime — do not hardcode their values.
           </Typography>
+          {authHeaderName && (
+            <Typography variant="body2" color="text.secondary">
+              Requests must carry the API key in the{" "}
+              <Box
+                component="code"
+                sx={{
+                  px: 0.5,
+                  py: 0.125,
+                  borderRadius: 0.5,
+                  bgcolor: "action.hover",
+                  fontFamily: "monospace",
+                }}
+              >
+                {authHeaderName}
+              </Box>{" "}
+              header. The snippet sets it for you.
+            </Typography>
+          )}
         </Stack>
         <ToggleButtonGroup
           size="small"
@@ -799,6 +844,7 @@ export const ViewLLMProviderComponent: React.FC = () => {
               const clientSetup = getClientSetupSnippet(
                 catalogProvider?.template,
                 config.environmentVariables.map((ev) => ev.key),
+                authHeaderName,
               );
               const imports = ["import os"];
               if (clientSetup) imports.push(clientSetup.importLine);
@@ -836,9 +882,14 @@ export const ViewLLMProviderComponent: React.FC = () => {
                 "Requirements:",
                 `- Read the environment variables listed above to configure the client for ${providerName}.`,
                 `- Initialize the ${providerName} client with the URL and API key from those variables.`,
+                authHeaderName
+                  ? `- Send the API key in the \`${authHeaderName}\` request header. The SDK's own authentication header is not sufficient, so set this one explicitly (e.g. via the client's default/extra headers).`
+                  : null,
                 "- Do not hardcode any secrets or endpoint URLs.",
                 "- Keep the rest of my code unchanged.",
-              ].join("\n");
+              ]
+                .filter(Boolean)
+                .join("\n");
             })()}
           />
         )}
@@ -863,7 +914,9 @@ export const ViewLLMProviderComponent: React.FC = () => {
           {(() => {
             const authEntry = authInfoByEnv?.[selectedEnvName];
             const apiKeyEnvVar = config.environmentVariables?.find((ev) => ev.key === "apikey");
-            const headerName = authEntry?.name || providerConfig?.authInfo?.name || "api-key";
+            // Matches how the URL and key below degrade when unknown, so the
+            // sample is never a working-looking command with an invented header.
+            const headerName = authEntry?.name || authHeaderName || "<header-name>";
             const headerValue = authEntry?.value || (apiKeyEnvVar ? `$${apiKeyEnvVar.name}` : "<api-key>");
             const curlCode = [
               `curl -X POST ${providerConfig.url || "<endpoint-url>"}/chat/completions`,
