@@ -482,18 +482,27 @@ func mcpProxyAPIKeySecurityEnabled(proxy *models.MCPProxy, envID string) bool {
 	return security.APIKey != nil && isBoolTrue(security.APIKey.Enabled)
 }
 
+// providerProxyAPIKeyHeader returns the header agents should send their credential in
+// when calling a proxy provisioned in front of this provider. It follows the header the
+// provider itself is configured with, so the name an admin sets on the provider is the
+// one their agents use rather than a separate platform-only name. The default stands in
+// when the provider names no header, or carries its credential somewhere other than a
+// header — the proxy always takes one in a header.
+func providerProxyAPIKeyHeader(provider *models.LLMProvider) string {
+	if provider == nil {
+		return models.DefaultLLMProxyAPIKeyHeader
+	}
+	return provider.Configuration.Security.APIKeyHeaderName(models.DefaultLLMProxyAPIKeyHeader)
+}
+
 // llmProxyAPIKeyHeaderName returns the header the agent must send its credential in
 // when calling the given LLM proxy. Unlike an MCP proxy, an LLM proxy stores its
 // security config on the proxy itself rather than per bound environment.
 func llmProxyAPIKeyHeaderName(proxy *models.LLMProxy) string {
-	if proxy == nil || proxy.Configuration.Security == nil || proxy.Configuration.Security.APIKey == nil {
+	if proxy == nil {
 		return models.DefaultLLMProxyAPIKeyHeader
 	}
-	header := strings.TrimSpace(proxy.Configuration.Security.APIKey.Key)
-	if header == "" {
-		return models.DefaultLLMProxyAPIKeyHeader
-	}
-	return header
+	return proxy.Configuration.Security.APIKeyHeaderName(models.DefaultLLMProxyAPIKeyHeader)
 }
 
 func mcpProxyAPIKeyHeaderName(proxy *models.MCPProxy, envID string) string {
@@ -4312,7 +4321,7 @@ func (s *agentConfigurationService) buildLLMProxyConfig(
 				Enabled: &enabled,
 				APIKey: &models.APIKeySecurity{
 					Enabled: &enabled,
-					Key:     models.DefaultLLMProxyAPIKeyHeader,
+					Key:     providerProxyAPIKeyHeader(provider),
 					In:      "header",
 				},
 			},

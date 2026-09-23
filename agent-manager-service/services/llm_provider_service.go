@@ -1079,6 +1079,133 @@ func (s *LLMProviderService) UpdateAndSync(ctx context.Context, providerID, ouID
 	}, nil
 }
 
+// proxyAuthSyncPageSize bounds each page of dependent proxies the sync walks.
+const proxyAuthSyncPageSize = 100
+
+// SyncDependentProxyAuthHeaders rewrites the API-key header on every proxy provisioned in
+// front of the given provider, so the header name an admin configures on the provider is
+// the one their agents authenticate with. Two headers move together: the one agents send
+// to the proxy, and the one the proxy forwards to the provider — leaving either behind
+// breaks that hop.
+//
+// A proxy already carrying both names is skipped, so a provider edit that leaves security
+// alone redeploys nothing. It is best-effort: a proxy that fails is logged and the rest
+// continue, since stopping partway strands more of the fleet than finishing does. The
+// returned error covers only a failure to enumerate dependents.
+func (s *LLMProviderService) SyncDependentProxyAuthHeaders(
+	provider *models.LLMProvider,
+	ouID string,
+	proxyService *LLMProxyService,
+	proxyDeploymentService *LLMProxyDeploymentService,
+) error {
+	if provider == nil || proxyService == nil || proxyDeploymentService == nil {
+		return utils.ErrInvalidInput
+	}
+
+	ingressHeader := providerProxyAPIKeyHeader(provider)
+	upstreamHeader := ""
+	if sec := provider.Configuration.Security; sec != nil && sec.APIKey != nil {
+		upstreamHeader = strings.TrimSpace(sec.APIKey.Key)
+	}
+
+	providerUUID := provider.UUID.String()
+	synced, failed := 0, 0
+
+	for offset := 0; ; offset += proxyAuthSyncPageSize {
+		proxies, err := s.proxyRepo.ListByProvider(ouID, providerUUID, proxyAuthSyncPageSize, offset)
+		if err != nil {
+			return fmt.Errorf("failed to list proxies for provider %s: %w", providerUUID, err)
+		}
+
+		for _, proxy := range proxies {
+			changed, syncErr := syncProxyAuthHeader(
+				proxy, ouID, ingressHeader, upstreamHeader, proxyService, proxyDeploymentService)
+			switch {
+			case syncErr != nil:
+				failed++
+				slog.Error("LLMProviderService.SyncDependentProxyAuthHeaders: proxy sync failed",
+					"providerUUID", providerUUID, "proxyHandle", proxy.Handle, "error", syncErr)
+			case changed:
+				synced++
+			}
+		}
+
+		if len(proxies) < proxyAuthSyncPageSize {
+			break
+		}
+	}
+
+	slog.Info("LLMProviderService.SyncDependentProxyAuthHeaders: finished",
+		"providerUUID", providerUUID, "ingressHeader", ingressHeader,
+		"syncedCount", synced, "failedCount", failed)
+	return nil
+}
+
+// proxyAuthHeadersStale reports which of a proxy's two headers still differ from its
+// provider's. It is what keeps a provider edit that leaves security alone from
+// redeploying the whole fleet, and it never reports a proxy without api-key security
+// as stale — an unsecured proxy is unsecured by choice, and adding a key would start
+// rejecting the very callers this sync exists to keep working.
+func proxyAuthHeadersStale(proxy *models.LLMProxy, ingressHeader, upstreamHeader string) (bool, bool) {
+	security := proxy.Configuration.Security
+	ingressStale := security != nil && security.APIKey != nil &&
+		security.APIKeyHeaderName(models.DefaultLLMProxyAPIKeyHeader) != ingressHeader
+
+	upstream := proxy.Configuration.UpstreamAuth
+	upstreamStale := upstreamHeader != "" && upstream != nil &&
+		(upstream.Header == nil || *upstream.Header != upstreamHeader)
+
+	return ingressStale, upstreamStale
+}
+
+// syncProxyAuthHeader brings one proxy's headers in line with its provider's and
+// redeploys it, reporting whether anything actually changed.
+func syncProxyAuthHeader(
+	proxy *models.LLMProxy,
+	ouID, ingressHeader, upstreamHeader string,
+	proxyService *LLMProxyService,
+	proxyDeploymentService *LLMProxyDeploymentService,
+) (bool, error) {
+	ingressStale, upstreamStale := proxyAuthHeadersStale(proxy, ingressHeader, upstreamHeader)
+	if !ingressStale && !upstreamStale {
+		return false, nil
+	}
+
+	if ingressStale {
+		proxy.Configuration.Security.APIKey.Key = ingressHeader
+	}
+	if upstreamStale {
+		proxy.Configuration.UpstreamAuth.Header = &upstreamHeader
+	}
+
+	if _, err := proxyService.Update(proxy.Handle, ouID, proxy); err != nil {
+		return false, fmt.Errorf("failed to update proxy %s: %w", proxy.Handle, err)
+	}
+
+	deployments, err := proxyDeploymentService.GetLLMProxyDeployments(proxy.Handle, ouID, nil, nil)
+	if err != nil {
+		return true, fmt.Errorf("failed to list deployments for proxy %s: %w", proxy.Handle, err)
+	}
+
+	// The stored config is already the new one, so any gateway still serving the old
+	// header is now the stale copy — redeploying from "current" is what closes that gap.
+	for _, deployment := range deployments {
+		if deployment.Status == nil || *deployment.Status != models.DeploymentStatusDeployed {
+			continue
+		}
+		if _, err := proxyDeploymentService.DeployLLMProxy(proxy.Handle, &models.DeployAPIRequest{
+			Name:      deployment.Name,
+			Base:      "current",
+			GatewayID: deployment.GatewayUUID.String(),
+		}, ouID); err != nil {
+			return true, fmt.Errorf("failed to redeploy proxy %s on gateway %s: %w",
+				proxy.Handle, deployment.GatewayUUID, err)
+		}
+	}
+
+	return true, nil
+}
+
 // ListProxiesByProvider lists all LLM proxies for a provider
 func (s *LLMProviderService) ListProxiesByProvider(providerID, ouID string, limit, offset int) ([]*models.LLMProxy, int, error) {
 	if providerID == "" {

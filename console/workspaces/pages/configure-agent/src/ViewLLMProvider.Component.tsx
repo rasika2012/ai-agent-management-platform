@@ -92,12 +92,14 @@ function getClientSetupSnippet(
   varKeys: string[],
   authHeaderName: string | undefined,
 ): { importLine: string; setup: string } | null {
-  if (!templateId || !authHeaderName) return null;
   const urlKey = varKeys.find((k) => /url/i.test(k));
   const apiKeyKey = varKeys.find((k) => /key/i.test(k));
-  // Every snippet authenticates with this variable; without it they would render
-  // `api_key=undefined` and fail on paste, so show no snippet at all instead.
-  if (!apiKeyKey) return null;
+  // Without a template, header and key variable every snippet below would render
+  // `undefined` somewhere and fail on paste — show none at all instead.
+  if (!templateId || !authHeaderName || !apiKeyKey) return null;
+
+  // Each SDK rejects an empty api_key at construction, so they all pass the same
+  // variable there; the credential the gateway actually checks is authHeaderName.
 
   const build = (
     importLine: string,
@@ -109,11 +111,6 @@ function getClientSetupSnippet(
 
   switch (templateId) {
     case "openai":
-      // api_key must be a real (non-empty) value or the SDK refuses to
-      // construct the client ("Missing credentials"); the actual gateway auth
-      // is the separate authHeaderName header, so what value the SDK's own
-      // Authorization header carries doesn't matter — reusing apiKeyKey
-      // satisfies the SDK without a second secret.
       return build("from openai import OpenAI", [
         "client = OpenAI(",
         urlKey ? `    base_url=${urlKey},` : null,
@@ -122,11 +119,8 @@ function getClientSetupSnippet(
         ")",
       ]);
     case "anthropic":
-      // Anthropic's SDK validates that an auth method (api_key/auth_token) is
-      // set, or that its own x-api-key/Authorization headers are explicitly
-      // omitted — an empty-string override satisfies neither and raises
-      // "Could not resolve authentication method" on every request. Passing a
-      // real api_key sidesteps that; the gateway only checks authHeaderName.
+      // Blanking its headers instead raises "Could not resolve authentication
+      // method" — an empty string does not count as explicitly omitted.
       return build("from anthropic import Anthropic", [
         "client = Anthropic(",
         urlKey ? `    base_url=${urlKey},` : null,
@@ -145,22 +139,24 @@ function getClientSetupSnippet(
         ")",
       ]);
     case "mistralai":
-      return build("import httpx\nfrom mistralai import Mistral", [
-        `_http_client = httpx.Client(headers={"${authHeaderName}": ${apiKeyKey}})`,
+      // `client` serves sync calls and `async_client` the async ones; setting
+      // only the former leaves every async request without the header.
+      return build("import httpx\nfrom mistralai.client import Mistral", [
+        `_headers = {"${authHeaderName}": ${apiKeyKey}}`,
         "client = Mistral(",
         urlKey ? `    server_url=${urlKey},` : null,
         `    api_key=${apiKeyKey},`,
-        "    client=_http_client,",
+        "    client=httpx.Client(headers=_headers),",
+        "    async_client=httpx.AsyncClient(headers=_headers),",
         ")",
       ]);
     case "gemini":
-      // genai.Client requires api_key to be set even when auth is really
-      // carried by the custom header below — otherwise it raises
-      // "No API key was provided" before a request is ever made.
+      // headers (not client_args) so async requests carry it too: client_args
+      // configures only the sync httpx client.
       return build("from google import genai\nfrom google.genai import types", [
         urlKey
-          ? `_http_options = types.HttpOptions(base_url=${urlKey}, client_args={"headers": {"${authHeaderName}": ${apiKeyKey}}})`
-          : `_http_options = types.HttpOptions(client_args={"headers": {"${authHeaderName}": ${apiKeyKey}}})`,
+          ? `_http_options = types.HttpOptions(base_url=${urlKey}, headers={"${authHeaderName}": ${apiKeyKey}})`
+          : `_http_options = types.HttpOptions(headers={"${authHeaderName}": ${apiKeyKey}})`,
         "client = genai.Client(",
         `    api_key=${apiKeyKey},`,
         `    http_options=_http_options,`,
@@ -775,10 +771,8 @@ export const ViewLLMProviderComponent: React.FC = () => {
 
   const apiKeyValue = providerConfig?.authInfo?.value;
 
-  // The header the agent's own client must send its credential in. Only the
-  // server knows it — it is stored per proxy and differs for proxies created
-  // before the name was aligned — so an absent value stays absent rather than
-  // being guessed at; callers below render nothing instead.
+  // Stored per proxy, so only the server knows it — absent stays absent here
+  // rather than being guessed at.
   const authHeaderName = providerConfig?.authInfo?.name;
 
   const pageTitle =

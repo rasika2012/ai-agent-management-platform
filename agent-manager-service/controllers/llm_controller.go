@@ -703,6 +703,18 @@ func (c *llmController) UpdateLLMProvider(w http.ResponseWriter, r *http.Request
 
 	log.Info("UpdateLLMProvider: provider updated successfully", "ouID", ouID, "providerID", providerID, "providerUUID", updated.UUID)
 
+	// Each dependent proxy holds its own copy of the provider's api-key header, so a
+	// security change has to reach them or agents keep authenticating with the old name.
+	// Detached and best-effort, the way MCP proxy edits refresh their dependents: the
+	// provider update has already succeeded and must not be failed by this.
+	go func() {
+		if err := c.providerService.SyncDependentProxyAuthHeaders(
+			updated, ouID, c.proxyService, c.proxyDeploymentService); err != nil {
+			log.Error("UpdateLLMProvider: failed to sync dependent proxy auth headers",
+				"ouID", ouID, "providerID", providerID, "error", err)
+		}
+	}()
+
 	// Convert model to spec response
 	response := utils.ConvertModelToSpecLLMProviderResponse(updated)
 	utils.WriteSuccessResponse(w, http.StatusOK, response)

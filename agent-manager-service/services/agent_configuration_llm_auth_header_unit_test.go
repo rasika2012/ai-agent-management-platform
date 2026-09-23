@@ -49,12 +49,12 @@ func TestLLMProxyAPIKeyHeaderName(t *testing.T) {
 			want:  "X-Custom-Key",
 		},
 		{
-			// Proxies provisioned before the default was aligned to X-API-Key
-			// are still enforced on "API-Key" by their deployed gateway policy,
-			// so the stored value has to win over the current default.
-			name:  "keeps the legacy header a proxy was provisioned with",
-			proxy: proxyWithHeader("API-Key"),
-			want:  "API-Key",
+			// A proxy's deployed gateway policy enforces whatever header it was
+			// stored with, so the stored value has to win over the default even
+			// when the default later changes.
+			name:  "stored header wins over the default",
+			proxy: proxyWithHeader("X-API-Key"),
+			want:  "X-API-Key",
 		},
 		{
 			name:  "trims surrounding whitespace",
@@ -86,6 +86,144 @@ func TestLLMProxyAPIKeyHeaderName(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.want, llmProxyAPIKeyHeaderName(tt.proxy))
+		})
+	}
+}
+
+// A proxy fronting a provider takes the provider's own configured header, so the
+// name an admin sets on the provider is the one their agents authenticate with.
+func TestProviderProxyAPIKeyHeader(t *testing.T) {
+	providerWithAPIKey := func(apiKey *models.APIKeySecurity) *models.LLMProvider {
+		return &models.LLMProvider{
+			Configuration: models.LLMProviderConfig{
+				Security: &models.SecurityConfig{APIKey: apiKey},
+			},
+		}
+	}
+
+	tests := []struct {
+		name     string
+		provider *models.LLMProvider
+		want     string
+	}{
+		{
+			name:     "follows the header configured on the provider",
+			provider: providerWithAPIKey(&models.APIKeySecurity{Key: "x-api-key", In: "header"}),
+			want:     "x-api-key",
+		},
+		{
+			name:     "treats an unset location as a header",
+			provider: providerWithAPIKey(&models.APIKeySecurity{Key: "x-api-key"}),
+			want:     "x-api-key",
+		},
+		{
+			// The proxy always takes its credential in a header, so a provider
+			// that reads one from the query string names nothing usable here.
+			name:     "falls back when the provider reads its key from the query",
+			provider: providerWithAPIKey(&models.APIKeySecurity{Key: "apikey", In: "query"}),
+			want:     models.DefaultLLMProxyAPIKeyHeader,
+		},
+		{
+			name:     "falls back when the provider names no header",
+			provider: providerWithAPIKey(&models.APIKeySecurity{Key: "  "}),
+			want:     models.DefaultLLMProxyAPIKeyHeader,
+		},
+		{
+			name:     "falls back when the provider has no api key security",
+			provider: providerWithAPIKey(nil),
+			want:     models.DefaultLLMProxyAPIKeyHeader,
+		},
+		{
+			name:     "falls back for a provider with no security block",
+			provider: &models.LLMProvider{},
+			want:     models.DefaultLLMProxyAPIKeyHeader,
+		},
+		{
+			name:     "falls back for a nil provider",
+			provider: nil,
+			want:     models.DefaultLLMProxyAPIKeyHeader,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, providerProxyAPIKeyHeader(tt.provider))
+		})
+	}
+}
+
+// The staleness check decides whether a provider edit redeploys a proxy at all, so it
+// has to be exact in both directions: miss a difference and agents keep sending a header
+// the gateway no longer accepts; report one spuriously and an unrelated provider edit
+// redeploys the whole fleet.
+func TestProxyAuthHeadersStale(t *testing.T) {
+	proxy := func(ingress string, upstream *string) *models.LLMProxy {
+		config := models.LLMProxyConfig{}
+		if ingress != "" {
+			config.Security = &models.SecurityConfig{APIKey: &models.APIKeySecurity{Key: ingress}}
+		}
+		if upstream != nil {
+			config.UpstreamAuth = &models.UpstreamAuth{Header: upstream}
+		}
+		return &models.LLMProxy{Configuration: config}
+	}
+	header := func(s string) *string { return &s }
+
+	tests := []struct {
+		name                      string
+		proxy                     *models.LLMProxy
+		ingress, upstream         string
+		wantIngress, wantUpstream bool
+	}{
+		{
+			name:    "both already match",
+			proxy:   proxy("x-api-key", header("x-api-key")),
+			ingress: "x-api-key", upstream: "x-api-key",
+		},
+		{
+			name:    "ingress differs",
+			proxy:   proxy("API-Key", header("x-api-key")),
+			ingress: "x-api-key", upstream: "x-api-key",
+			wantIngress: true,
+		},
+		{
+			name:    "upstream differs",
+			proxy:   proxy("x-api-key", header("API-Key")),
+			ingress: "x-api-key", upstream: "x-api-key",
+			wantUpstream: true,
+		},
+		{
+			// The pre-existing gap: a proxy provisioned before an edit carries both
+			// stale names, and fixing only one leaves the other hop broken.
+			name:    "both differ",
+			proxy:   proxy("API-Key", header("API-Key")),
+			ingress: "x-api-key", upstream: "x-api-key",
+			wantIngress: true, wantUpstream: true,
+		},
+		{
+			name:    "upstream auth present but unset header",
+			proxy:   proxy("x-api-key", nil),
+			ingress: "x-api-key", upstream: "x-api-key",
+		},
+		{
+			name:    "proxy without api key security is left alone",
+			proxy:   proxy("", header("x-api-key")),
+			ingress: "x-api-key", upstream: "x-api-key",
+		},
+		{
+			// A provider with no api-key header of its own names nothing to forward,
+			// so the upstream hop must not be rewritten to an empty header.
+			name:    "provider names no upstream header",
+			proxy:   proxy("x-api-key", header("API-Key")),
+			ingress: "x-api-key", upstream: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotIngress, gotUpstream := proxyAuthHeadersStale(tt.proxy, tt.ingress, tt.upstream)
+			require.Equal(t, tt.wantIngress, gotIngress, "ingress staleness")
+			require.Equal(t, tt.wantUpstream, gotUpstream, "upstream staleness")
 		})
 	}
 }

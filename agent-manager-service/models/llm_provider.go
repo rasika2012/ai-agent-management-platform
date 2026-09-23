@@ -17,6 +17,8 @@
 package models
 
 import (
+	"strings"
+
 	"github.com/google/uuid"
 )
 
@@ -194,4 +196,21 @@ type APIKeySecurity struct {
 	Enabled *bool  `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 	Key     string `json:"key,omitempty" yaml:"key,omitempty"`
 	In      string `json:"in,omitempty" yaml:"in,omitempty"`
+}
+
+// APIKeyHeaderName returns the header an API-key credential is carried in, or def
+// when none is named or it is carried somewhere other than a header. Nil-safe, so
+// callers can hand it a config they have not checked. Having the rule here keeps
+// the write and read paths from disagreeing on what the same struct means.
+func (s *SecurityConfig) APIKeyHeaderName(def string) string {
+	if s == nil || s.APIKey == nil {
+		return def
+	}
+	if in := strings.ToLower(strings.TrimSpace(s.APIKey.In)); in != "" && in != "header" {
+		return def
+	}
+	if header := strings.TrimSpace(s.APIKey.Key); header != "" {
+		return header
+	}
+	return def
 }
