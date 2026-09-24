@@ -1171,10 +1171,18 @@ func syncProxyAuthHeader(
 		return false, nil
 	}
 
+	// The store has to move first, because a redeploy regenerates the gateway config
+	// from it. That ordering is why the prior values are kept: the console reads the
+	// stored header to tell agents what to send, so a config left promising a header
+	// no gateway accepts is worse than one that was never updated.
+	var priorIngress string
+	var priorUpstream *string
 	if ingressStale {
+		priorIngress = proxy.Configuration.Security.APIKey.Key
 		proxy.Configuration.Security.APIKey.Key = ingressHeader
 	}
 	if upstreamStale {
+		priorUpstream = proxy.Configuration.UpstreamAuth.Header
 		proxy.Configuration.UpstreamAuth.Header = &upstreamHeader
 	}
 
@@ -1182,13 +1190,26 @@ func syncProxyAuthHeader(
 		return false, fmt.Errorf("failed to update proxy %s: %w", proxy.Handle, err)
 	}
 
-	deployments, err := proxyDeploymentService.GetLLMProxyDeployments(proxy.Handle, ouID, nil, nil)
-	if err != nil {
-		return true, fmt.Errorf("failed to list deployments for proxy %s: %w", proxy.Handle, err)
+	restoreStoredHeaders := func() {
+		if ingressStale {
+			proxy.Configuration.Security.APIKey.Key = priorIngress
+		}
+		if upstreamStale {
+			proxy.Configuration.UpstreamAuth.Header = priorUpstream
+		}
+		if _, err := proxyService.Update(proxy.Handle, ouID, proxy); err != nil {
+			slog.Error("syncProxyAuthHeader: failed to restore headers after a failed redeploy",
+				"proxyHandle", proxy.Handle, "error", err)
+		}
 	}
 
-	// The stored config is already the new one, so any gateway still serving the old
-	// header is now the stale copy — redeploying from "current" is what closes that gap.
+	deployments, err := proxyDeploymentService.GetLLMProxyDeployments(proxy.Handle, ouID, nil, nil)
+	if err != nil {
+		restoreStoredHeaders()
+		return false, fmt.Errorf("failed to list deployments for proxy %s: %w", proxy.Handle, err)
+	}
+
+	redeployed := 0
 	for _, deployment := range deployments {
 		if deployment.Status == nil || *deployment.Status != models.DeploymentStatusDeployed {
 			continue
@@ -1198,9 +1219,21 @@ func syncProxyAuthHeader(
 			Base:      "current",
 			GatewayID: deployment.GatewayUUID.String(),
 		}, ouID); err != nil {
+			// Nothing took the new header yet, so putting the store back leaves the
+			// proxy exactly as it was. Once one gateway has accepted it there is no
+			// value that matches every gateway, and an operator has to converge it.
+			if redeployed == 0 {
+				restoreStoredHeaders()
+				return false, fmt.Errorf("failed to redeploy proxy %s on gateway %s: %w",
+					proxy.Handle, deployment.GatewayUUID, err)
+			}
+			slog.Error("syncProxyAuthHeader: proxy left serving different headers per gateway",
+				"proxyHandle", proxy.Handle, "gatewayUUID", deployment.GatewayUUID,
+				"redeployedCount", redeployed, "storedHeader", ingressHeader)
 			return true, fmt.Errorf("failed to redeploy proxy %s on gateway %s: %w",
 				proxy.Handle, deployment.GatewayUUID, err)
 		}
+		redeployed++
 	}
 
 	return true, nil
