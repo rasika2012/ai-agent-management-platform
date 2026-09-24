@@ -208,6 +208,7 @@ export function normalizeAgentModelConfigResponse(
         policies?: unknown[];
         apiKey?: string;
         authHeaderName?: string;
+        authIn?: string;
       };
       configuration?: unknown;
     }>;
@@ -236,7 +237,7 @@ export function normalizeAgentModelConfigResponse(
                 authInfo: mapping.llmProxy.authHeaderName
                   ? {
                       type: "apikey",
-                      in: "header",
+                      in: mapping.llmProxy.authIn || "header",
                       name: mapping.llmProxy.authHeaderName,
                       value: mapping.llmProxy.apiKey,
                     }

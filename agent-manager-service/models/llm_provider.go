@@ -214,3 +214,23 @@ func (s *SecurityConfig) APIKeyHeaderName(def string) string {
 	}
 	return def
 }
+
+// APIKeyNameAndLocation returns the API-key credential's parameter name and where it
+// is carried ("header" or "query"), defaulting the name to defName and the location to
+// "header" when nothing is configured. Unlike APIKeyHeaderName, it never discards a
+// configured name just because the location isn't "header": a query-based proxy's real
+// parameter name is still worth reporting accurately, not silently replaced by a
+// header-oriented default.
+func (s *SecurityConfig) APIKeyNameAndLocation(defName string) (name, in string) {
+	if s == nil || s.APIKey == nil {
+		return defName, "header"
+	}
+	in = strings.ToLower(strings.TrimSpace(s.APIKey.In))
+	if in != "header" && in != "query" {
+		in = "header"
+	}
+	if key := strings.TrimSpace(s.APIKey.Key); key != "" {
+		return key, in
+	}
+	return defName, in
+}

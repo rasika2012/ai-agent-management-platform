@@ -91,15 +91,27 @@ function getClientSetupSnippet(
   templateId: string | undefined,
   varKeys: string[],
   authHeaderName: string | undefined,
+  authIn: string | undefined,
 ): { importLine: string; setup: string } | null {
   const urlKey = varKeys.find((k) => /url/i.test(k));
   const apiKeyKey = varKeys.find((k) => /key/i.test(k));
-  // Without a template, header and key variable every snippet below would render
-  // `undefined` somewhere and fail on paste — show none at all instead.
-  if (!templateId || !authHeaderName || !apiKeyKey) return null;
+  // Without a template or key variable every snippet below would render `undefined`
+  // somewhere and fail on paste — show none at all instead.
+  if (!templateId || !apiKeyKey) return null;
+  // Every branch below only knows how to attach the credential as a header. A proxy
+  // that reads it from the query string instead needs a different mechanism per
+  // library (not all expose a way to add an arbitrary query param to every request),
+  // so don't fabricate header-based code that would silently send the credential
+  // the wrong way — the surrounding prose already tells the reader it's a query
+  // parameter.
+  if (authHeaderName && authIn === "query") return null;
 
   // Each SDK rejects an empty api_key at construction, so they all pass the same
-  // variable there; the credential the gateway actually checks is authHeaderName.
+  // variable there; the credential the gateway actually checks (when one is
+  // required at all) is authHeaderName.
+  const headerLine = authHeaderName
+    ? `    default_headers={"${authHeaderName}": ${apiKeyKey}},`
+    : null;
 
   const build = (
     importLine: string,
@@ -115,7 +127,7 @@ function getClientSetupSnippet(
         "client = OpenAI(",
         urlKey ? `    base_url=${urlKey},` : null,
         `    api_key=${apiKeyKey},`,
-        `    default_headers={"${authHeaderName}": ${apiKeyKey}},`,
+        headerLine,
         ")",
       ]);
     case "anthropic":
@@ -125,7 +137,7 @@ function getClientSetupSnippet(
         "client = Anthropic(",
         urlKey ? `    base_url=${urlKey},` : null,
         `    api_key=${apiKeyKey},`,
-        `    default_headers={"${authHeaderName}": ${apiKeyKey}},`,
+        headerLine,
         ")",
       ]);
     case "azure-openai":
@@ -135,33 +147,38 @@ function getClientSetupSnippet(
         urlKey ? `    azure_endpoint=${urlKey},` : null,
         `    api_version="2024-02-01",  # match your Azure OpenAI deployment's API version`,
         `    api_key=${apiKeyKey},`,
-        `    default_headers={"${authHeaderName}": ${apiKeyKey}},`,
+        headerLine,
         ")",
       ]);
-    case "mistralai":
+    case "mistralai": {
       // `client` serves sync calls and `async_client` the async ones; setting
       // only the former leaves every async request without the header.
+      const headers = authHeaderName ? `{"${authHeaderName}": ${apiKeyKey}}` : null;
       return build("import httpx\nfrom mistralai.client import Mistral", [
-        `_headers = {"${authHeaderName}": ${apiKeyKey}}`,
+        headers ? `_headers = ${headers}` : null,
         "client = Mistral(",
         urlKey ? `    server_url=${urlKey},` : null,
         `    api_key=${apiKeyKey},`,
-        "    client=httpx.Client(headers=_headers),",
-        "    async_client=httpx.AsyncClient(headers=_headers),",
+        headers ? "    client=httpx.Client(headers=_headers)," : null,
+        headers ? "    async_client=httpx.AsyncClient(headers=_headers)," : null,
         ")",
       ]);
-    case "gemini":
+    }
+    case "gemini": {
       // headers (not client_args) so async requests carry it too: client_args
       // configures only the sync httpx client.
+      const headersArg = authHeaderName ? `headers={"${authHeaderName}": ${apiKeyKey}}` : null;
+      const httpOptionsArgs = [urlKey ? `base_url=${urlKey}` : null, headersArg]
+        .filter(Boolean)
+        .join(", ");
       return build("from google import genai\nfrom google.genai import types", [
-        urlKey
-          ? `_http_options = types.HttpOptions(base_url=${urlKey}, headers={"${authHeaderName}": ${apiKeyKey}})`
-          : `_http_options = types.HttpOptions(headers={"${authHeaderName}": ${apiKeyKey}})`,
+        httpOptionsArgs ? `_http_options = types.HttpOptions(${httpOptionsArgs})` : null,
         "client = genai.Client(",
         `    api_key=${apiKeyKey},`,
-        `    http_options=_http_options,`,
+        httpOptionsArgs ? `    http_options=_http_options,` : null,
         ")",
       ]);
+    }
     case "awsbedrock":
       return build("import boto3\nfrom botocore import UNSIGNED\nfrom botocore.config import Config", [
         "client = boto3.client(",
@@ -169,10 +186,10 @@ function getClientSetupSnippet(
         urlKey ? `    endpoint_url=${urlKey},` : null,
         `    config=Config(signature_version=UNSIGNED),`,
         ")",
-        `def _add_headers(request, **kwargs):`,
-        `    request.headers["${authHeaderName}"] = ${apiKeyKey}`,
-        `    request.headers["Authorization"] = ""`,
-        `client.meta.events.register("before-send", _add_headers)`,
+        authHeaderName ? `def _add_headers(request, **kwargs):` : null,
+        authHeaderName ? `    request.headers["${authHeaderName}"] = ${apiKeyKey}` : null,
+        authHeaderName ? `    request.headers["Authorization"] = ""` : null,
+        authHeaderName ? `client.meta.events.register("before-send", _add_headers)` : null,
       ]);
     default:
       return null;
@@ -772,8 +789,11 @@ export const ViewLLMProviderComponent: React.FC = () => {
   const apiKeyValue = providerConfig?.authInfo?.value;
 
   // Stored per proxy, so only the server knows it — absent stays absent here
-  // rather than being guessed at.
+  // rather than being guessed at. A proxy that requires no credential at all
+  // reports neither, so authHeaderName being falsy means "no auth", not "header".
   const authHeaderName = providerConfig?.authInfo?.name;
+  const authIn = providerConfig?.authInfo?.in;
+  const isQueryAuth = authIn === "query";
 
   const pageTitle =
     config.name || catalogProvider?.name || providerConfig?.providerName;
@@ -801,7 +821,7 @@ export const ViewLLMProviderComponent: React.FC = () => {
             Copy the snippet below into your agent code. The environment variables will be
             injected automatically at runtime — do not hardcode their values.
           </Typography>
-          {authHeaderName && (
+          {authHeaderName && !isQueryAuth && (
             <Typography variant="body2" color="text.secondary">
               Requests must carry the API key in the{" "}
               <Box
@@ -817,6 +837,33 @@ export const ViewLLMProviderComponent: React.FC = () => {
                 {authHeaderName}
               </Box>{" "}
               header. The snippet sets it for you.
+            </Typography>
+          )}
+          {authHeaderName && isQueryAuth && (
+            <Typography variant="body2" color="text.secondary">
+              Requests must carry the API key in the{" "}
+              <Box
+                component="code"
+                sx={{
+                  px: 0.5,
+                  py: 0.125,
+                  borderRadius: 0.5,
+                  bgcolor: "action.hover",
+                  fontFamily: "monospace",
+                }}
+              >
+                {authHeaderName}
+              </Box>{" "}
+              query parameter (e.g. appended to the URL as{" "}
+              <Box component="code" sx={{ fontFamily: "monospace" }}>
+                ?{authHeaderName}=&lt;api-key&gt;
+              </Box>
+              ) — the SDK client below doesn&apos;t set this for you.
+            </Typography>
+          )}
+          {!authHeaderName && (
+            <Typography variant="body2" color="text.secondary">
+              No authentication is required to call this proxy.
             </Typography>
           )}
         </Stack>
@@ -839,6 +886,7 @@ export const ViewLLMProviderComponent: React.FC = () => {
                 catalogProvider?.template,
                 config.environmentVariables.map((ev) => ev.key),
                 authHeaderName,
+                authIn,
               );
               const imports = ["import os"];
               if (clientSetup) imports.push(clientSetup.importLine);
@@ -876,8 +924,11 @@ export const ViewLLMProviderComponent: React.FC = () => {
                 "Requirements:",
                 `- Read the environment variables listed above to configure the client for ${providerName}.`,
                 `- Initialize the ${providerName} client with the URL and API key from those variables.`,
-                authHeaderName
+                authHeaderName && !isQueryAuth
                   ? `- Send the API key in the \`${authHeaderName}\` request header. The SDK's own authentication header is not sufficient, so set this one explicitly (e.g. via the client's default/extra headers).`
+                  : null,
+                authHeaderName && isQueryAuth
+                  ? `- Send the API key in the \`${authHeaderName}\` query parameter (e.g. appended to the URL as \`?${authHeaderName}=<api-key>\`), not as a header.`
                   : null,
                 "- Do not hardcode any secrets or endpoint URLs.",
                 "- Keep the rest of my code unchanged.",
@@ -908,18 +959,41 @@ export const ViewLLMProviderComponent: React.FC = () => {
           {(() => {
             const authEntry = authInfoByEnv?.[selectedEnvName];
             const apiKeyEnvVar = config.environmentVariables?.find((ev) => ev.key === "apikey");
+            // A proxy that requires no credential reports neither an entry nor a
+            // stored name — that's "no auth", not an unknown header to guess at.
+            const noAuthRequired = !authEntry?.name && !authHeaderName;
             // Matches how the URL and key below degrade when unknown, so the
             // sample is never a working-looking command with an invented header.
             const headerName = authEntry?.name || authHeaderName || "<header-name>";
             const headerValue = authEntry?.value || (apiKeyEnvVar ? `$${apiKeyEnvVar.name}` : "<api-key>");
-            const curlCode = [
-              `curl -X POST ${providerConfig.url || "<endpoint-url>"}/chat/completions`,
-              `  --header "${headerName}: ${headerValue}"`,
-              `  -d '{"model": "", "messages": [{"role": "user", "content": "Hi..."}]}'`,
-            ].join(" \\\n");
+            const entryIsQueryAuth = (authEntry?.in || authIn) === "query";
+            const endpointUrl = providerConfig.url || "<endpoint-url>";
+            const curlCode = noAuthRequired
+              ? [
+                `curl -X POST ${endpointUrl}/chat/completions`,
+                `  -d '{"model": "", "messages": [{"role": "user", "content": "Hi..."}]}'`,
+              ].join(" \\\n")
+              : entryIsQueryAuth
+                ? [
+                  `curl -X POST "${endpointUrl}/chat/completions?${headerName}=${headerValue}"`,
+                  `  -d '{"model": "", "messages": [{"role": "user", "content": "Hi..."}]}'`,
+                ].join(" \\\n")
+                : [
+                  `curl -X POST ${endpointUrl}/chat/completions`,
+                  `  --header "${headerName}: ${headerValue}"`,
+                  `  -d '{"model": "", "messages": [{"role": "user", "content": "Hi..."}]}'`,
+                ].join(" \\\n");
             return (
               <Stack spacing={2}>
-                {!authEntry && (
+                {!authEntry && noAuthRequired && (
+                  <Alert severity="info">
+                    <Typography variant="body2">
+                      This proxy requires no credential. To route your agent&apos;s traffic through
+                      the governance layer, configure your client with the endpoint below.
+                    </Typography>
+                  </Alert>
+                )}
+                {!authEntry && !noAuthRequired && (
                   <Alert severity="info">
                     <Typography variant="body2">
                       The credentials for this provider were issued during initial setup. To route
@@ -958,10 +1032,10 @@ export const ViewLLMProviderComponent: React.FC = () => {
                 )}
                 {authEntry && (
                   <TextInput
-                    label="Header Name"
+                    label={authEntry.in === "query" ? "Query Parameter Name" : "Header Name"}
                     value={authEntry.name}
                     copyable
-                    copyTooltipText="Copy Header Name"
+                    copyTooltipText={authEntry.in === "query" ? "Copy Query Parameter Name" : "Copy Header Name"}
                     slotProps={{ input: { readOnly: true } }}
                     size="small"
                   />

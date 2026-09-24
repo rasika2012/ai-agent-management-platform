@@ -174,6 +174,7 @@ func (p *LLMProxyProvisioner) ProvisionProxy(ctx context.Context, params Provisi
 
 	contextPath := fmt.Sprintf("/%s", uuid.New())
 	enabled := true
+	ingressName, ingressIn := providerProxyAPIKeySecurity(provider)
 	proxyConfig := &models.LLMProxy{
 		Description: params.Description,
 		ProjectUUID: params.ProjectUUID,
@@ -187,8 +188,8 @@ func (p *LLMProxyProvisioner) ProvisionProxy(ctx context.Context, params Provisi
 				Enabled: &enabled,
 				APIKey: &models.APIKeySecurity{
 					Enabled: &enabled,
-					Key:     providerProxyAPIKeyHeader(provider),
-					In:      "header",
+					Key:     ingressName,
+					In:      ingressIn,
 				},
 			},
 		},
