@@ -447,6 +447,28 @@ func TestProxyUpstreamAuthAction(t *testing.T) {
 	}
 }
 
+// The stored config is written before gateways are redeployed, so after a partial
+// rollout it matches the target while some gateways still serve the old policy. The
+// pending list is what stops that from reading as converged — without it no later sync
+// retries, and a stale gateway keeps accepting requests without a now-required key.
+func TestProxyIngressStale_PendingRolloutIsNotConverged(t *testing.T) {
+	target := enabledAPIKeySecurity("x-api-key", "header")
+
+	converged := &models.LLMProxy{Configuration: models.LLMProxyConfig{
+		Security: enabledAPIKeySecurity("x-api-key", "header"),
+	}}
+	require.False(t, proxyIngressStale(converged, target),
+		"a fully rolled out proxy must not be redeployed again")
+
+	// Same stored config, but a gateway was left behind.
+	pending := &models.LLMProxy{Configuration: models.LLMProxyConfig{
+		Security:                   enabledAPIKeySecurity("x-api-key", "header"),
+		AuthRolloutPendingGateways: []string{"gateway-b"},
+	}}
+	require.True(t, proxyIngressStale(pending, target),
+		"a proxy with a gateway still on the previous auth config has work left")
+}
+
 // A provider with authentication set to None must not produce a proxy that demands a
 // credential: disabling auth also revokes the provider's keys, so such a proxy cannot be
 // called at all. The name and location are still carried so re-enabling restores what

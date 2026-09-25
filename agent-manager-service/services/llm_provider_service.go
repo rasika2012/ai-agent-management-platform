@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 
@@ -1285,6 +1286,13 @@ func proxyAuthHeadersStale(proxy *models.LLMProxy, ingress *models.SecurityConfi
 // has to come first: a disabled config resolves to the same default name as an enabled
 // one, so comparing names alone couldn't see auth being turned off.
 func proxyIngressStale(proxy *models.LLMProxy, ingress *models.SecurityConfig) bool {
+	// A gateway with no recorded deployment of the stored config has nothing queued to
+	// replay, so it stays on the previous auth policy until another sync redeploys it.
+	// The stored config already matches the target, hence this cannot be inferred from
+	// the comparison below.
+	if len(proxy.Configuration.AuthRolloutPendingGateways) > 0 {
+		return true
+	}
 	current := proxy.Configuration.Security
 	if current.RequiresAPIKey() != ingress.RequiresAPIKey() {
 		return true
@@ -1401,6 +1409,7 @@ func (s *LLMProviderService) syncProxyAuthHeader(
 	ingress := newProxyIngressSecurity(provider)
 	ingressStale := proxyIngressStale(proxy, ingress)
 	upstreamAction := proxyUpstreamAuthAction(proxy, upstreamHeader)
+	priorPending := proxy.Configuration.AuthRolloutPendingGateways
 	if !ingressStale && upstreamAction == upstreamAuthUnchanged {
 		return false, nil
 	}
@@ -1467,6 +1476,7 @@ func (s *LLMProviderService) syncProxyAuthHeader(
 		if upstreamChanged {
 			proxy.Configuration.UpstreamAuth = priorUpstreamAuth
 		}
+		proxy.Configuration.AuthRolloutPendingGateways = priorPending
 		if _, err := proxyService.Update(proxy.Handle, ouID, proxy); err != nil {
 			slog.Error("syncProxyAuthHeader: failed to restore headers after a failed redeploy",
 				"proxyHandle", proxy.Handle, "error", err)
@@ -1508,6 +1518,20 @@ func (s *LLMProviderService) syncProxyAuthHeader(
 			continue
 		}
 		redeployed++
+	}
+
+	// Record the outcome so the stored row stops claiming a convergence it doesn't have.
+	// Without this a partial rollout reads as fully synced and no later sync retries the
+	// gateways still on the old policy.
+	if !slices.Equal(priorPending, straggleGateways) {
+		// Non-nil even when empty: nil reads as "not specified" and would preserve the
+		// stored list instead of clearing it after a rollout that fully succeeded.
+		proxy.Configuration.AuthRolloutPendingGateways = append([]string{}, straggleGateways...)
+		if _, err := proxyService.Update(proxy.Handle, ouID, proxy); err != nil {
+			slog.Error("syncProxyAuthHeader: failed to record rollout outcome",
+				"proxyHandle", proxy.Handle, "staleGateways", strings.Join(straggleGateways, ","),
+				"error", err)
+		}
 	}
 
 	if len(stragglers) > 0 {
