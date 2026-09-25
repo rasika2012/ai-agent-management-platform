@@ -711,9 +711,13 @@ func (c *llmController) UpdateLLMProvider(w http.ResponseWriter, r *http.Request
 	// Detached and best-effort, the way MCP proxy edits refresh their dependents: the
 	// provider update has already succeeded and must not be failed by this.
 	if services.ProviderAuthHeadersChanged(existing, updated) {
+		// Detached from the request: the response is about to be written, so the request
+		// context is cancelled before the sync gets far. It keeps the request's values
+		// (trace and tenant metadata) so the minting it may do is still attributable.
+		syncCtx := context.WithoutCancel(r.Context())
 		go func() {
 			if err := c.providerService.SyncDependentProxyAuthHeaders(
-				updated, ouID, c.proxyService, c.proxyDeploymentService); err != nil {
+				syncCtx, updated, ouID, c.proxyService, c.proxyDeploymentService); err != nil {
 				log.Error("UpdateLLMProvider: failed to sync dependent proxy auth headers",
 					"ouID", ouID, "providerID", providerID, "error", err)
 			}

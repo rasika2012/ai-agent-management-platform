@@ -496,6 +496,33 @@ func providerProxyAPIKeySecurity(provider *models.LLMProvider) (name, in string)
 	return provider.Configuration.Security.APIKeyNameAndLocation(models.DefaultLLMProxyAPIKeyHeader)
 }
 
+// newProxyIngressSecurity builds the ingress security block for a proxy provisioned in
+// front of the given provider, taking the provider's own configured name, location, and
+// crucially whether a credential is required at all. Shared by every place that
+// provisions a new proxy and by the resync path, so they can't drift.
+//
+// The requirement used to be hardcoded on, which meant a provider with authentication
+// set to None still produced a proxy demanding the default API-Key header — and since
+// disabling auth also revokes the provider's keys, that proxy could not be called at
+// all. The name and location are kept even when no credential is required, so turning
+// auth back on restores what the admin configured rather than a default.
+func newProxyIngressSecurity(provider *models.LLMProvider) *models.SecurityConfig {
+	var providerSecurity *models.SecurityConfig
+	if provider != nil {
+		providerSecurity = provider.Configuration.Security
+	}
+	required := providerSecurity.RequiresAPIKey()
+	ingressName, ingressIn := providerProxyAPIKeySecurity(provider)
+	return &models.SecurityConfig{
+		Enabled: &required,
+		APIKey: &models.APIKeySecurity{
+			Enabled: &required,
+			Key:     ingressName,
+			In:      ingressIn,
+		},
+	}
+}
+
 // llmProxyAPIKeySecurity returns the parameter name and location ("header" or "query")
 // the agent must send its credential in when calling the given LLM proxy, or ("", "")
 // when the proxy doesn't actually require one — api-key auth was never configured, or
@@ -4313,25 +4340,16 @@ func (s *agentConfigurationService) buildLLMProxyConfig(
 		return nil, "", "", nil, "", fmt.Errorf("invalid project UUID from openchoreo: %w", err)
 	}
 
-	enabled := true
-	ingressName, ingressIn := providerProxyAPIKeySecurity(provider)
 	// Build proxy configuration
 	proxyConfig := &models.LLMProxy{
 		Description: fmt.Sprintf("LLM proxy for agent %s", config.AgentID),
 		ProjectUUID: projectUUID,
 		Configuration: models.LLMProxyConfig{
-			Name:     proxyName,
-			Version:  models.DefaultProxyVersion,
-			Context:  &contextPath,
-			Provider: provider.UUID.String(),
-			Security: &models.SecurityConfig{
-				Enabled: &enabled,
-				APIKey: &models.APIKeySecurity{
-					Enabled: &enabled,
-					Key:     ingressName,
-					In:      ingressIn,
-				},
-			},
+			Name:       proxyName,
+			Version:    models.DefaultProxyVersion,
+			Context:    &contextPath,
+			Provider:   provider.UUID.String(),
+			Security:   newProxyIngressSecurity(provider),
 			Policies:   envMapping.Configuration.Policies,
 			Resilience: envMapping.Configuration.Resilience,
 		},
@@ -4346,6 +4364,13 @@ func (s *agentConfigurationService) buildLLMProxyConfig(
 
 		if providerApiKeyConfig != nil && providerApiKeyConfig.Enabled != nil && *providerApiKeyConfig.Enabled {
 			// Provider api key security is enabled.
+			// Resolved before anything is created, so a provider whose credential the
+			// upstream contract can't carry fails with nothing to roll back.
+			upstreamHeader, err := providerUpstreamAPIKeyAuth(provider)
+			if err != nil {
+				return nil, "", "", nil, "", err
+			}
+
 			apiKey, err := s.llmProviderAPIKeyService.CreateAPIKey(ctx, config.OUID, provider.UUID.String(), &models.CreateAPIKeyRequest{
 				Name:        proxyName,
 				DisplayName: proxyName,
@@ -4374,7 +4399,7 @@ func (s *agentConfigurationService) buildLLMProxyConfig(
 			}
 			encoded := base64.StdEncoding.EncodeToString(encrypted)
 			upstreamAuthConfig.Type = utils.StrAsStrPointer(models.AuthTypeAPIKey)
-			upstreamAuthConfig.Header = utils.StrAsStrPointer(providerApiKeyConfig.Key)
+			upstreamAuthConfig.Header = utils.StrAsStrPointer(upstreamHeader)
 			upstreamAuthConfig.SecretRef = &encoded // Store encrypted value instead of plaintext
 			upstreamAuthConfig.Value = nil          // No plaintext in DB
 			proxyConfig.Configuration.UpstreamAuth = &upstreamAuthConfig

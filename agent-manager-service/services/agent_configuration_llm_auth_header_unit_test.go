@@ -17,6 +17,7 @@
 package services
 
 import (
+	"context"
 	"testing"
 
 	"github.com/google/uuid"
@@ -24,7 +25,27 @@ import (
 
 	"github.com/wso2/agent-manager/agent-manager-service/models"
 	"github.com/wso2/agent-manager/agent-manager-service/repositories/repomocks"
+	"github.com/wso2/agent-manager/agent-manager-service/utils"
 )
+
+// llmProviderWith builds the nested LLMProvider literal every test in this file needs,
+// varying only in handle and security block. One shape to update when SecurityConfig
+// changes, rather than a builder closure re-declared per test.
+func llmProviderWith(handle string, security *models.SecurityConfig) *models.LLMProvider {
+	return &models.LLMProvider{
+		Configuration: models.LLMProviderConfig{Handle: handle, Security: security},
+	}
+}
+
+// enabledAPIKeySecurity is a security block with api-key auth explicitly turned on —
+// the shape the console's security tab persists.
+func enabledAPIKeySecurity(key, in string) *models.SecurityConfig {
+	enabled := true
+	return &models.SecurityConfig{
+		Enabled: &enabled,
+		APIKey:  &models.APIKeySecurity{Enabled: &enabled, Key: key, In: in},
+	}
+}
 
 // The name and location an agent must send its credential in are reported from the
 // proxy's own stored security config rather than a literal, so a proxy provisioned
@@ -166,11 +187,7 @@ func TestLLMProxyAPIKeySecurity(t *testing.T) {
 // to query — ProvisionProxy and the resync path both went through this function).
 func TestProviderProxyAPIKeySecurity(t *testing.T) {
 	providerWithAPIKey := func(apiKey *models.APIKeySecurity) *models.LLMProvider {
-		return &models.LLMProvider{
-			Configuration: models.LLMProviderConfig{
-				Security: &models.SecurityConfig{APIKey: apiKey},
-			},
-		}
+		return llmProviderWith("", &models.SecurityConfig{APIKey: apiKey})
 	}
 
 	tests := []struct {
@@ -246,34 +263,50 @@ func TestProviderProxyAPIKeySecurity(t *testing.T) {
 // dependent proxies resynced (CRIT: this used to compare names only, so a proxy stayed
 // on "header" forever after its provider moved to "query").
 func TestProxyAuthHeadersStale(t *testing.T) {
+	// A provisioned proxy always carries explicit enabled flags (see
+	// newProxyIngressSecurity), so the fixtures do too — an absent flag means something
+	// different now that the requirement is part of the comparison.
+	// A provisioned proxy's upstream block always carries the encrypted credential
+	// alongside the header name; a block with a name but nothing to send is what
+	// "needs provisioning" looks like, so the fixtures must not conflate the two.
+	secretRef := "encrypted-provider-key"
 	proxy := func(ingress, ingressIn string, upstream *string) *models.LLMProxy {
 		config := models.LLMProxyConfig{}
 		if ingress != "" {
-			config.Security = &models.SecurityConfig{APIKey: &models.APIKeySecurity{Key: ingress, In: ingressIn}}
+			config.Security = enabledAPIKeySecurity(ingress, ingressIn)
 		}
 		if upstream != nil {
-			config.UpstreamAuth = &models.UpstreamAuth{Header: upstream}
+			config.UpstreamAuth = &models.UpstreamAuth{Header: upstream, SecretRef: &secretRef}
 		}
 		return &models.LLMProxy{Configuration: config}
 	}
 	header := func(s string) *string { return &s }
+	// The ingress target as the sync builds it: what the provider now implies.
+	target := func(name, in string) *models.SecurityConfig { return enabledAPIKeySecurity(name, in) }
+	noCredential := func() *models.SecurityConfig {
+		disabled := false
+		return &models.SecurityConfig{
+			Enabled: &disabled,
+			APIKey:  &models.APIKeySecurity{Enabled: &disabled, Key: models.DefaultLLMProxyAPIKeyHeader, In: "header"},
+		}
+	}
 
 	tests := []struct {
 		name                      string
 		proxy                     *models.LLMProxy
-		ingress, ingressIn        string
+		ingress                   *models.SecurityConfig
 		upstream                  string
 		wantIngress, wantUpstream bool
 	}{
 		{
 			name:    "both already match",
 			proxy:   proxy("x-api-key", "header", header("x-api-key")),
-			ingress: "x-api-key", ingressIn: "header", upstream: "x-api-key",
+			ingress: target("x-api-key", "header"), upstream: "x-api-key",
 		},
 		{
 			name:    "ingress name differs",
 			proxy:   proxy("API-Key", "header", header("x-api-key")),
-			ingress: "x-api-key", ingressIn: "header", upstream: "x-api-key",
+			ingress: target("x-api-key", "header"), upstream: "x-api-key",
 			wantIngress: true,
 		},
 		{
@@ -281,13 +314,33 @@ func TestProxyAuthHeadersStale(t *testing.T) {
 			// itself must be recognized as stale, not just the name.
 			name:    "ingress location differs",
 			proxy:   proxy("x-api-key", "header", header("x-api-key")),
-			ingress: "x-api-key", ingressIn: "query", upstream: "x-api-key",
+			ingress: target("x-api-key", "query"), upstream: "x-api-key",
+			wantIngress: true,
+		},
+		{
+			// CRIT: the provider was switched to None. A disabled config resolves to the
+			// same default name as an enabled one, so comparing names alone saw nothing
+			// and left every dependent proxy demanding a key the provider no longer
+			// issues — the proxy became uncallable rather than open.
+			// Both hops have to stand down together: the ingress stops demanding a key,
+			// and the proxy stops forwarding one the provider no longer checks.
+			name:    "provider turned api-key auth off",
+			proxy:   proxy("API-Key", "header", header("API-Key")),
+			ingress: noCredential(), upstream: "",
+			wantIngress: true, wantUpstream: true,
+		},
+		{
+			// The reverse: auth turned back on must reach proxies provisioned while it
+			// was off, or agents are handed a key the gateway never checks.
+			name:    "provider turned api-key auth on",
+			proxy:   &models.LLMProxy{Configuration: models.LLMProxyConfig{Security: noCredential()}},
+			ingress: target("x-api-key", "header"), upstream: "",
 			wantIngress: true,
 		},
 		{
 			name:    "upstream differs",
 			proxy:   proxy("x-api-key", "header", header("API-Key")),
-			ingress: "x-api-key", ingressIn: "header", upstream: "x-api-key",
+			ingress: target("x-api-key", "header"), upstream: "x-api-key",
 			wantUpstream: true,
 		},
 		{
@@ -295,35 +348,129 @@ func TestProxyAuthHeadersStale(t *testing.T) {
 			// stale names, and fixing only one leaves the other hop broken.
 			name:    "both differ",
 			proxy:   proxy("API-Key", "header", header("API-Key")),
-			ingress: "x-api-key", ingressIn: "header", upstream: "x-api-key",
+			ingress: target("x-api-key", "header"), upstream: "x-api-key",
 			wantIngress: true, wantUpstream: true,
 		},
 		{
-			name:    "upstream auth present but unset header",
+			// CRIT: no upstream block at all while the provider requires a credential —
+			// the proxy was provisioned before auth was turned on. This used to report
+			// "not stale", leaving the proxy calling the provider anonymously forever.
+			name:    "provider requires a credential the proxy has no upstream block for",
 			proxy:   proxy("x-api-key", "header", nil),
-			ingress: "x-api-key", ingressIn: "header", upstream: "x-api-key",
+			ingress: target("x-api-key", "header"), upstream: "x-api-key",
+			wantUpstream: true,
 		},
 		{
-			name:    "proxy without api key security is left alone",
-			proxy:   proxy("", "", header("x-api-key")),
-			ingress: "x-api-key", ingressIn: "header", upstream: "x-api-key",
+			// Neither side wants a credential and the proxy forwards none: nothing to
+			// converge, so an unrelated provider edit must not redeploy it.
+			name:    "unsecured proxy under an unsecured provider is left alone",
+			proxy:   proxy("", "", nil),
+			ingress: noCredential(), upstream: "",
 		},
 		{
-			// A provider with no api-key header of its own names nothing to forward,
-			// so the upstream hop must not be rewritten to an empty header.
+			// A provider that names nothing to forward means the proxy should stop
+			// forwarding too, even while its own ingress still requires a key.
 			name:    "provider names no upstream header",
 			proxy:   proxy("x-api-key", "header", header("API-Key")),
-			ingress: "x-api-key", ingressIn: "header", upstream: "",
+			ingress: target("x-api-key", "header"), upstream: "",
+			wantUpstream: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotIngress, gotUpstream := proxyAuthHeadersStale(tt.proxy, tt.ingress, tt.ingressIn, tt.upstream)
+			gotIngress, gotUpstream := proxyAuthHeadersStale(tt.proxy, tt.ingress, tt.upstream)
 			require.Equal(t, tt.wantIngress, gotIngress, "ingress staleness")
 			require.Equal(t, tt.wantUpstream, gotUpstream, "upstream staleness")
 		})
 	}
+}
+
+// Renaming the upstream header is not the only way the hop goes wrong. A proxy created
+// while its provider was unsecured carries no UpstreamAuth at all, so enabling api-key
+// auth later has to mint one — comparing header names alone left that proxy calling the
+// provider anonymously, which surfaces as a 401 from the provider's own gateway. The
+// reverse has to stop the proxy forwarding a credential nothing asks for any more.
+func TestProxyUpstreamAuthAction(t *testing.T) {
+	secretRef := "encrypted"
+	withUpstream := func(header *string, secret *string) *models.LLMProxy {
+		return &models.LLMProxy{Configuration: models.LLMProxyConfig{
+			UpstreamAuth: &models.UpstreamAuth{Header: header, SecretRef: secret},
+		}}
+	}
+	name := func(s string) *string { return &s }
+
+	tests := []struct {
+		name           string
+		proxy          *models.LLMProxy
+		upstreamHeader string
+		want           upstreamAuthAction
+	}{
+		{
+			name:  "already matches",
+			proxy: withUpstream(name("API-Key"), &secretRef), upstreamHeader: "API-Key",
+			want: upstreamAuthUnchanged,
+		},
+		{
+			name:  "header renamed",
+			proxy: withUpstream(name("API-Key"), &secretRef), upstreamHeader: "x-api-key",
+			want: upstreamAuthRename,
+		},
+		{
+			// CRIT: provisioned while the provider was unsecured, so there is no
+			// credential to rename — one has to be minted or the hop stays anonymous.
+			name:  "provider gained api-key auth after the proxy existed",
+			proxy: &models.LLMProxy{}, upstreamHeader: "API-Key",
+			want: upstreamAuthProvision,
+		},
+		{
+			name:  "upstream block present but carries no credential",
+			proxy: withUpstream(name("API-Key"), nil), upstreamHeader: "API-Key",
+			want: upstreamAuthProvision,
+		},
+		{
+			name:  "provider dropped api-key auth",
+			proxy: withUpstream(name("API-Key"), &secretRef), upstreamHeader: "",
+			want: upstreamAuthClear,
+		},
+		{
+			name:  "unsecured provider, proxy never had upstream auth",
+			proxy: &models.LLMProxy{}, upstreamHeader: "",
+			want: upstreamAuthUnchanged,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, proxyUpstreamAuthAction(tt.proxy, tt.upstreamHeader))
+		})
+	}
+}
+
+// A provider with authentication set to None must not produce a proxy that demands a
+// credential: disabling auth also revokes the provider's keys, so such a proxy cannot be
+// called at all. The name and location are still carried so re-enabling restores what
+// the admin configured rather than a platform default.
+func TestNewProxyIngressSecurityFollowsProvider(t *testing.T) {
+	disabled := false
+
+	secured := newProxyIngressSecurity(llmProviderWith("acme", enabledAPIKeySecurity("x-api-key", "header")))
+	require.True(t, secured.RequiresAPIKey(), "a secured provider must yield a proxy requiring a credential")
+	name, in := secured.APIKeyNameAndLocation(models.DefaultLLMProxyAPIKeyHeader)
+	require.Equal(t, "x-api-key", name)
+	require.Equal(t, "header", in)
+
+	unsecured := newProxyIngressSecurity(llmProviderWith("acme", &models.SecurityConfig{
+		Enabled: &disabled,
+		APIKey:  &models.APIKeySecurity{Enabled: &disabled, Key: "x-api-key", In: "header"},
+	}))
+	require.False(t, unsecured.RequiresAPIKey(), "auth set to None must not yield a proxy demanding a key")
+	keptName, keptIn := unsecured.APIKeyNameAndLocation(models.DefaultLLMProxyAPIKeyHeader)
+	require.Equal(t, "x-api-key", keptName, "the configured name is kept for when auth is re-enabled")
+	require.Equal(t, "header", keptIn)
+
+	noSecurity := newProxyIngressSecurity(llmProviderWith("acme", nil))
+	require.False(t, noSecurity.RequiresAPIKey(), "a provider with no security block requires no credential")
 }
 
 // Provisioning and reporting must agree on the header name: a freshly built proxy
@@ -459,9 +606,124 @@ func TestSyncDependentProxyAuthHeaders_RefetchesCurrentProvider(t *testing.T) {
 	}
 	svc := &LLMProviderService{providerRepo: providerRepo, proxyRepo: proxyRepo}
 
-	err := svc.SyncDependentProxyAuthHeaders(staleSnapshot, "ou-acme", &LLMProxyService{}, &LLMProxyDeploymentService{})
+	err := svc.SyncDependentProxyAuthHeaders(
+		context.Background(), staleSnapshot, "ou-acme", &LLMProxyService{}, &LLMProxyDeploymentService{})
 
 	require.NoError(t, err)
 	require.Equal(t, providerUUID.String(), gotProviderID, "must refetch the provider named in the (possibly stale) snapshot it was handed")
 	require.Equal(t, "ou-acme", gotOuID)
+}
+
+// The provider's gateway enforces the api-key name its deployment resolved, which
+// defaults an unnamed key (see llm_deployment_service). The header a proxy forwards
+// that credential under has to resolve identically, or a provider that enabled
+// api-key auth without naming a key gets a proxy forwarding it under no name at all
+// while its gateway checks for the default — a hop that can never authenticate. A
+// provider that never enabled api-key auth still names nothing to forward.
+func TestProviderUpstreamAPIKeyHeader(t *testing.T) {
+	enabled := true
+	disabled := false
+	providerWith := func(key string, apiKeyEnabled *bool) *models.LLMProvider {
+		sec := enabledAPIKeySecurity(key, "header")
+		sec.APIKey.Enabled = apiKeyEnabled
+		return llmProviderWith("", sec)
+	}
+
+	tests := []struct {
+		name     string
+		provider *models.LLMProvider
+		want     string
+	}{
+		{
+			name:     "named key is forwarded as named",
+			provider: providerWith("X-API-Key", &enabled),
+			want:     "X-API-Key",
+		},
+		{
+			// The gap this closes: deployment resolves the default for the provider's
+			// own gateway, so the forwarded header must be that same default.
+			name:     "unnamed key on a secured provider resolves the deployed default",
+			provider: providerWith("", &enabled),
+			want:     models.DefaultLLMProxyAPIKeyHeader,
+		},
+		{
+			name:     "unnamed key without api-key auth names nothing",
+			provider: providerWith("", &disabled),
+			want:     "",
+		},
+		{
+			name:     "provider without security names nothing",
+			provider: &models.LLMProvider{},
+			want:     "",
+		},
+		{
+			name:     "nil provider names nothing",
+			provider: nil,
+			want:     "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, providerUpstreamAPIKeyHeader(tt.provider))
+		})
+	}
+}
+
+// models.UpstreamAuth can only name a header, so a provider that reads its key from the
+// query string cannot be fronted by a proxy that authenticates to it. Provisioning has
+// to refuse rather than hand back a proxy whose every upstream call is rejected.
+func TestProviderUpstreamAPIKeyAuthRejectsQueryLocation(t *testing.T) {
+	providerIn := func(in string) *models.LLMProvider {
+		return llmProviderWith("acme-openai", enabledAPIKeySecurity("apikey", in))
+	}
+
+	name, err := providerUpstreamAPIKeyAuth(providerIn("header"))
+	require.NoError(t, err)
+	require.Equal(t, "apikey", name)
+
+	_, err = providerUpstreamAPIKeyAuth(providerIn("query"))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "acme-openai")
+}
+
+// The gateway's api-key-auth policy declares `in` as enum: ["header"] and reads the
+// credential from a header only, so a provider saved with any other location produces
+// proxies that reject every request. The edit is refused rather than stored, since the
+// resulting 401s say nothing about the cause.
+func TestValidateProxyAPIKeyLocation(t *testing.T) {
+	providerIn := func(in string) *models.LLMProvider {
+		return llmProviderWith("", enabledAPIKeySecurity("API-Key", in))
+	}
+
+	tests := []struct {
+		name     string
+		provider *models.LLMProvider
+		wantErr  bool
+	}{
+		{name: "header is supported", provider: providerIn("header"), wantErr: false},
+		{name: "unset location defaults to a header", provider: providerIn(""), wantErr: false},
+		{name: "case and padding are ignored", provider: providerIn("  Header "), wantErr: false},
+		{name: "query is refused", provider: providerIn("query"), wantErr: true},
+		{name: "any other location is refused", provider: providerIn("cookie"), wantErr: true},
+		{
+			name:     "no api key block is nothing to validate",
+			provider: &models.LLMProvider{Configuration: models.LLMProviderConfig{Security: &models.SecurityConfig{}}},
+			wantErr:  false,
+		},
+		{name: "no security block is nothing to validate", provider: &models.LLMProvider{}, wantErr: false},
+		{name: "nil provider is nothing to validate", provider: nil, wantErr: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateProxyAPIKeyLocation(tt.provider)
+			if !tt.wantErr {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			require.ErrorIs(t, err, utils.ErrInvalidInput)
+		})
+	}
 }

@@ -94,10 +94,17 @@ function getClientSetupSnippet(
   authIn: string | undefined,
 ): { importLine: string; setup: string } | null {
   const urlKey = varKeys.find((k) => /url/i.test(k));
-  const apiKeyKey = varKeys.find((k) => /key/i.test(k));
-  // Without a template or key variable every snippet below would render `undefined`
-  // somewhere and fail on paste — show none at all instead.
-  if (!templateId || !apiKeyKey) return null;
+  const apiKeyVar = varKeys.find((k) => /key/i.test(k));
+  // Without a template every snippet below would render `undefined` somewhere and fail
+  // on paste — show none at all instead.
+  if (!templateId) return null;
+  // A proxy that requires no credential is deployed without an apikey variable, so
+  // there is nothing to read one from. The SDKs below still reject an empty api_key at
+  // construction, so pass a placeholder rather than dropping the snippet entirely —
+  // an unsecured proxy still needs the base_url wiring, which is the whole point of
+  // the guide. It stays a bare literal: these render inside argument lists, so a
+  // trailing comment would swallow the comma after it.
+  const apiKeyKey = apiKeyVar ?? '"unused-by-this-proxy"';
   // Every branch below only knows how to attach the credential as a header. A proxy
   // that reads it from the query string instead needs a different mechanism per
   // library (not all expose a way to add an arbitrary query param to every request),
@@ -154,7 +161,10 @@ function getClientSetupSnippet(
       // `client` serves sync calls and `async_client` the async ones; setting
       // only the former leaves every async request without the header.
       const headers = authHeaderName ? `{"${authHeaderName}": ${apiKeyKey}}` : null;
-      return build("import httpx\nfrom mistralai.client import Mistral", [
+      // `mistralai.client` is the v0.x module and exported MistralClient, not Mistral;
+      // the v1.x class this snippet configures (server_url, client, async_client) is
+      // exported from the package root, so the old path raised ImportError on paste.
+      return build("import httpx\nfrom mistralai import Mistral", [
         headers ? `_headers = ${headers}` : null,
         "client = Mistral(",
         urlKey ? `    server_url=${urlKey},` : null,
@@ -811,6 +821,27 @@ export const ViewLLMProviderComponent: React.FC = () => {
     description: generateDisplayName(envVar.key),
   }));
 
+  const authCodeChip = (value: string) => (
+    <Box
+      component="code"
+      sx={{ px: 0.5, py: 0.125, borderRadius: 0.5, bgcolor: "action.hover", fontFamily: "monospace" }}
+    >
+      {value}
+    </Box>
+  );
+  const authRequirementNote = !authHeaderName ? (
+    "No authentication is required to call this proxy."
+  ) : isQueryAuth ? (
+    <>
+      Requests must carry the API key in the {authCodeChip(authHeaderName)} query parameter (e.g.
+      appended to the URL as{" "}
+      <Box component="code" sx={{ fontFamily: "monospace" }}>?{authHeaderName}=&lt;api-key&gt;</Box>) —
+      the SDK client below doesn&apos;t set this for you.
+    </>
+  ) : (
+    <>Requests must carry the API key in the {authCodeChip(authHeaderName)} header. The snippet sets it for you.</>
+  );
+
   const integrationGuide = (
     <>
       <Divider sx={{ my: 2 }} />
@@ -821,51 +852,7 @@ export const ViewLLMProviderComponent: React.FC = () => {
             Copy the snippet below into your agent code. The environment variables will be
             injected automatically at runtime — do not hardcode their values.
           </Typography>
-          {authHeaderName && !isQueryAuth && (
-            <Typography variant="body2" color="text.secondary">
-              Requests must carry the API key in the{" "}
-              <Box
-                component="code"
-                sx={{
-                  px: 0.5,
-                  py: 0.125,
-                  borderRadius: 0.5,
-                  bgcolor: "action.hover",
-                  fontFamily: "monospace",
-                }}
-              >
-                {authHeaderName}
-              </Box>{" "}
-              header. The snippet sets it for you.
-            </Typography>
-          )}
-          {authHeaderName && isQueryAuth && (
-            <Typography variant="body2" color="text.secondary">
-              Requests must carry the API key in the{" "}
-              <Box
-                component="code"
-                sx={{
-                  px: 0.5,
-                  py: 0.125,
-                  borderRadius: 0.5,
-                  bgcolor: "action.hover",
-                  fontFamily: "monospace",
-                }}
-              >
-                {authHeaderName}
-              </Box>{" "}
-              query parameter (e.g. appended to the URL as{" "}
-              <Box component="code" sx={{ fontFamily: "monospace" }}>
-                ?{authHeaderName}=&lt;api-key&gt;
-              </Box>
-              ) — the SDK client below doesn&apos;t set this for you.
-            </Typography>
-          )}
-          {!authHeaderName && (
-            <Typography variant="body2" color="text.secondary">
-              No authentication is required to call this proxy.
-            </Typography>
-          )}
+          <Typography variant="body2" color="text.secondary">{authRequirementNote}</Typography>
         </Stack>
         <ToggleButtonGroup
           size="small"
@@ -923,7 +910,9 @@ export const ViewLLMProviderComponent: React.FC = () => {
                 "",
                 "Requirements:",
                 `- Read the environment variables listed above to configure the client for ${providerName}.`,
-                `- Initialize the ${providerName} client with the URL and API key from those variables.`,
+                authHeaderName
+                  ? `- Initialize the ${providerName} client with the URL and API key from those variables.`
+                  : `- Initialize the ${providerName} client with the URL from those variables.`,
                 authHeaderName && !isQueryAuth
                   ? `- Send the API key in the \`${authHeaderName}\` request header. The SDK's own authentication header is not sufficient, so set this one explicitly (e.g. via the client's default/extra headers).`
                   : null,
@@ -968,21 +957,21 @@ export const ViewLLMProviderComponent: React.FC = () => {
             const headerValue = authEntry?.value || (apiKeyEnvVar ? `$${apiKeyEnvVar.name}` : "<api-key>");
             const entryIsQueryAuth = (authEntry?.in || authIn) === "query";
             const endpointUrl = providerConfig.url || "<endpoint-url>";
-            const curlCode = noAuthRequired
-              ? [
-                `curl -X POST ${endpointUrl}/chat/completions`,
-                `  -d '{"model": "", "messages": [{"role": "user", "content": "Hi..."}]}'`,
-              ].join(" \\\n")
-              : entryIsQueryAuth
-                ? [
-                  `curl -X POST "${endpointUrl}/chat/completions?${headerName}=${headerValue}"`,
-                  `  -d '{"model": "", "messages": [{"role": "user", "content": "Hi..."}]}'`,
-                ].join(" \\\n")
-                : [
-                  `curl -X POST ${endpointUrl}/chat/completions`,
-                  `  --header "${headerName}: ${headerValue}"`,
-                  `  -d '{"model": "", "messages": [{"role": "user", "content": "Hi..."}]}'`,
-                ].join(" \\\n");
+            const requestUrl = `${endpointUrl}/chat/completions`;
+            const curlCode = [
+              `curl -X POST ${requestUrl}`,
+              !noAuthRequired && !entryIsQueryAuth ? `  --header "${headerName}: ${headerValue}"` : null,
+              // --url-query appends to the query string itself, so the URL above stays
+              // copy-pasteable whatever the endpoint already carries. curl encodes the
+              // value and expects the name pre-encoded, hence the asymmetry: the key is
+              // left raw (it is often a shell variable to expand), the name is escaped.
+              !noAuthRequired && entryIsQueryAuth
+                ? `  --url-query "${encodeURIComponent(headerName)}=${headerValue}"`
+                : null,
+              `  -d '{"model": "", "messages": [{"role": "user", "content": "Hi..."}]}'`,
+            ]
+              .filter(Boolean)
+              .join(" \\\n");
             return (
               <Stack spacing={2}>
                 {!authEntry && noAuthRequired && (

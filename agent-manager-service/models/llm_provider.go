@@ -17,6 +17,7 @@
 package models
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/google/uuid"
@@ -198,29 +199,14 @@ type APIKeySecurity struct {
 	In      string `json:"in,omitempty" yaml:"in,omitempty"`
 }
 
-// APIKeyHeaderName returns the header an API-key credential is carried in, or def
-// when none is named or it is carried somewhere other than a header. Nil-safe, so
-// callers can hand it a config they have not checked. Having the rule here keeps
-// the write and read paths from disagreeing on what the same struct means.
-func (s *SecurityConfig) APIKeyHeaderName(def string) string {
-	if s == nil || s.APIKey == nil {
-		return def
-	}
-	if in := strings.ToLower(strings.TrimSpace(s.APIKey.In)); in != "" && in != "header" {
-		return def
-	}
-	if header := strings.TrimSpace(s.APIKey.Key); header != "" {
-		return header
-	}
-	return def
-}
-
 // APIKeyNameAndLocation returns the API-key credential's parameter name and where it
 // is carried ("header" or "query"), defaulting the name to defName and the location to
-// "header" when nothing is configured. Unlike APIKeyHeaderName, it never discards a
-// configured name just because the location isn't "header": a query-based proxy's real
-// parameter name is still worth reporting accurately, not silently replaced by a
-// header-oriented default.
+// "header" when nothing is configured. It never discards a configured name just because
+// the location isn't "header": a legacy query-based proxy's real parameter name is still
+// worth reporting accurately, not silently replaced by a header-oriented default.
+//
+// New writes are held to header-only by ValidateAPIKeyLocation; this reports what is
+// actually stored, so rows written before that rule still describe themselves honestly.
 func (s *SecurityConfig) APIKeyNameAndLocation(defName string) (name, in string) {
 	if s == nil || s.APIKey == nil {
 		return defName, "header"
@@ -233,4 +219,39 @@ func (s *SecurityConfig) APIKeyNameAndLocation(defName string) (name, in string)
 		return key, in
 	}
 	return defName, in
+}
+
+// RequiresAPIKey reports whether this config makes the gateway actually demand an API
+// key. It is the same condition the deployment translators use when deciding to emit the
+// api-key-auth policy: both flags must be explicitly true, because an absent flag emits
+// no policy at all. Anything that reports a credential requirement to agents, or decides
+// whether to provision one, has to read it the same way — otherwise the platform either
+// promises a credential the gateway never checks, or enforces one it never announced.
+func (s *SecurityConfig) RequiresAPIKey() bool {
+	return s != nil &&
+		s.Enabled != nil && *s.Enabled &&
+		s.APIKey != nil &&
+		s.APIKey.Enabled != nil && *s.APIKey.Enabled
+}
+
+// ValidateAPIKeyLocation rejects an api-key location the gateway cannot enforce. The
+// api-key-auth policy every proxy is deployed with declares its own `in` parameter as
+// enum: ["header"] and reads the credential from a header only, so a config stored with
+// any other location yields proxies that 401 every request with nothing in the response
+// explaining why. Refusing it at the write keeps that unauthenticatable state from being
+// reachable at all. A blank location is accepted and resolves to the default, "header".
+//
+// This is the single definition of that rule: callers that need a typed error wrap it
+// rather than restating which locations are allowed.
+func (s *SecurityConfig) ValidateAPIKeyLocation() error {
+	if s == nil || s.APIKey == nil {
+		return nil
+	}
+	in := strings.ToLower(strings.TrimSpace(s.APIKey.In))
+	if in == "" || in == "header" {
+		return nil
+	}
+	return fmt.Errorf(
+		"api key location %q is not supported — the gateway's api-key-auth policy reads the credential from a header only",
+		s.APIKey.In)
 }

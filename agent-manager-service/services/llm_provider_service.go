@@ -231,15 +231,29 @@ func (s *LLMProviderService) resolveProvider(identifier, ouID string) (*models.L
 	return s.providerRepo.GetByHandle(identifier, ouID)
 }
 
+// validateProxyAPIKeyLocation adapts models.SecurityConfig.ValidateAPIKeyLocation — the
+// single definition of which locations the gateway can enforce — to the ErrInvalidInput
+// convention this package's callers expect, so a rejected location surfaces as a 400
+// rather than a 500.
+func validateProxyAPIKeyLocation(provider *models.LLMProvider) error {
+	if provider == nil {
+		return nil
+	}
+	if err := provider.Configuration.Security.ValidateAPIKeyLocation(); err != nil {
+		return fmt.Errorf("%w: %s", utils.ErrInvalidInput, err)
+	}
+	return nil
+}
+
 // applyDefaultProxyAPIKeyHeader defaults a blank ingress API key name to the same
 // value providerProxyAPIKeySecurity would resolve, so the provider's stored security
 // config (and therefore the console's security tab, deployment YAML, and provisioned
 // proxies) all agree on one name up front instead of each resolving a blank value
-// separately. Only the name defaults; the location (header vs query) is left exactly
-// as the caller set it.
+// separately. Only the name defaults; the location is left as the caller set it, having
+// already been held to header-only by validateProxyAPIKeyLocation.
 func applyDefaultProxyAPIKeyHeader(provider *models.LLMProvider) {
 	sec := provider.Configuration.Security
-	if sec == nil || !isBoolTrue(sec.Enabled) || sec.APIKey == nil || !isBoolTrue(sec.APIKey.Enabled) {
+	if !isAPIKeyAuthEnabled(sec) {
 		return
 	}
 	if strings.TrimSpace(sec.APIKey.Key) == "" {
@@ -283,6 +297,11 @@ func (s *LLMProviderService) Create(ctx context.Context, ouID, createdBy string,
 	if template == "" {
 		slog.Error("LLMProviderService.Create: template not specified", "ouID", ouID, "handle", handle)
 		return nil, utils.ErrInvalidInput
+	}
+
+	if err := validateProxyAPIKeyLocation(provider); err != nil {
+		slog.Warn("LLMProviderService.Create: unsupported api key location", "ouID", ouID, "handle", handle, "error", err)
+		return nil, err
 	}
 
 	// Set default values
@@ -568,6 +587,10 @@ func (s *LLMProviderService) Update(ctx context.Context, providerID, ouID string
 		if err := updates.Configuration.Upstream.Main.Auth.Validate(); err != nil {
 			return nil, err
 		}
+	}
+	if err := validateProxyAPIKeyLocation(updates); err != nil {
+		slog.Warn("LLMProviderService.Update: unsupported api key location", "ouID", ouID, "providerID", providerID, "error", err)
+		return nil, err
 	}
 	applyDefaultProxyAPIKeyHeader(updates)
 
@@ -1101,10 +1124,12 @@ func (s *LLMProviderService) UpdateAndSync(ctx context.Context, providerID, ouID
 // proxyAuthSyncPageSize bounds each page of dependent proxies the sync walks.
 const proxyAuthSyncPageSize = 100
 
-// providerUpstreamAPIKeyHeader is the header the provider itself names for its api-key
-// credential, blank when it names none. Distinct from providerProxyAPIKeySecurity, which
-// falls back to a default: a blank upstream header must stay blank, since forwarding a
-// default the provider never asked for would rewrite the third hop to something wrong.
+// providerUpstreamAPIKeyHeader is the name the provider itself carries its api-key
+// credential under, blank when it names no api-key security at all. A provider that
+// enables api-key auth without naming a key is deployed with the same default
+// providerProxyAPIKeySecurity resolves (see llm_deployment_service), so the upstream hop
+// has to resolve it the same way: leaving it blank would forward the credential under no
+// name at all, to a gateway that is checking for the default.
 func providerUpstreamAPIKeyHeader(provider *models.LLMProvider) string {
 	if provider == nil {
 		return ""
@@ -1113,7 +1138,28 @@ func providerUpstreamAPIKeyHeader(provider *models.LLMProvider) string {
 	if sec == nil || sec.APIKey == nil {
 		return ""
 	}
-	return strings.TrimSpace(sec.APIKey.Key)
+	// An unnamed key on a provider that never turned api-key auth on names nothing to
+	// forward, and must not be rewritten to a default the provider never asked for.
+	if strings.TrimSpace(sec.APIKey.Key) == "" && !isAPIKeyAuthEnabled(sec) {
+		return ""
+	}
+	name, _ := providerProxyAPIKeySecurity(provider)
+	return name
+}
+
+// providerUpstreamAPIKeyAuth resolves the header a freshly provisioned proxy must forward
+// the provider's credential under, refusing a location models.UpstreamAuth cannot express
+// — it can only name a header, so such a proxy would send the key where the provider's
+// gateway never looks and every call through it would fail to authenticate. Failing
+// provisioning surfaces that limit instead of shipping a broken proxy.
+//
+// It shares one rule with the provider write path, so a location refused at save is
+// refused here too, on the legacy rows that were stored before that rule existed.
+func providerUpstreamAPIKeyAuth(provider *models.LLMProvider) (string, error) {
+	if err := validateProxyAPIKeyLocation(provider); err != nil {
+		return "", fmt.Errorf("provider %q: %w", provider.Configuration.Handle, err)
+	}
+	return providerUpstreamAPIKeyHeader(provider), nil
 }
 
 // ProviderAuthHeadersChanged reports whether an update actually changed a header (or
@@ -1123,6 +1169,9 @@ func providerUpstreamAPIKeyHeader(provider *models.LLMProvider) string {
 // since there is nothing to compare against.
 func ProviderAuthHeadersChanged(existing, updated *models.LLMProvider) bool {
 	if existing == nil || updated == nil {
+		return true
+	}
+	if existing.Configuration.Security.RequiresAPIKey() != updated.Configuration.Security.RequiresAPIKey() {
 		return true
 	}
 	existingName, existingIn := providerProxyAPIKeySecurity(existing)
@@ -1142,6 +1191,7 @@ func ProviderAuthHeadersChanged(existing, updated *models.LLMProvider) bool {
 // continue, since stopping partway strands more of the fleet than finishing does. The
 // returned error covers only a failure to enumerate dependents.
 func (s *LLMProviderService) SyncDependentProxyAuthHeaders(
+	ctx context.Context,
 	provider *models.LLMProvider,
 	ouID string,
 	proxyService *LLMProxyService,
@@ -1162,6 +1212,7 @@ func (s *LLMProviderService) SyncDependentProxyAuthHeaders(
 	provider = current
 
 	ingressName, ingressIn := providerProxyAPIKeySecurity(provider)
+	ingressRequired := provider.Configuration.Security.RequiresAPIKey()
 	upstreamHeader := providerUpstreamAPIKeyHeader(provider)
 
 	providerUUID := provider.UUID.String()
@@ -1174,8 +1225,8 @@ func (s *LLMProviderService) SyncDependentProxyAuthHeaders(
 		}
 
 		for _, proxy := range proxies {
-			changed, syncErr := syncProxyAuthHeader(
-				proxy, ouID, ingressName, ingressIn, upstreamHeader, proxyService, proxyDeploymentService)
+			changed, syncErr := s.syncProxyAuthHeader(
+				ctx, proxy, ouID, provider, upstreamHeader, proxyService, proxyDeploymentService)
 			switch {
 			case syncErr != nil:
 				failed++
@@ -1193,43 +1244,155 @@ func (s *LLMProviderService) SyncDependentProxyAuthHeaders(
 
 	slog.Info("LLMProviderService.SyncDependentProxyAuthHeaders: finished",
 		"providerUUID", providerUUID, "ingressName", ingressName, "ingressIn", ingressIn,
+		"ingressRequiresAPIKey", ingressRequired,
 		"syncedCount", synced, "failedCount", failed)
 	return nil
 }
 
-// proxyAuthHeadersStale reports which of a proxy's two headers still differ from its
-// provider's. It is what keeps a provider edit that leaves security alone from
-// redeploying the whole fleet, and it never reports a proxy without api-key security
-// as stale — an unsecured proxy is unsecured by choice, and adding a key would start
-// rejecting the very callers this sync exists to keep working. Ingress staleness
-// compares both the name and the location (header vs query): a provider switched from
-// header to query with the same key name must still resync, or the proxy is left
-// enforcing the wrong location forever.
-func proxyAuthHeadersStale(proxy *models.LLMProxy, ingressName, ingressIn, upstreamHeader string) (bool, bool) {
-	security := proxy.Configuration.Security
-	var ingressStale bool
-	if security != nil && security.APIKey != nil {
-		currentName, currentIn := security.APIKeyNameAndLocation(models.DefaultLLMProxyAPIKeyHeader)
-		ingressStale = currentName != ingressName || currentIn != ingressIn
-	}
-
-	upstream := proxy.Configuration.UpstreamAuth
-	upstreamStale := upstreamHeader != "" && upstream != nil &&
-		(upstream.Header == nil || *upstream.Header != upstreamHeader)
-
-	return ingressStale, upstreamStale
+// proxyAuthHeadersStale reports which of a proxy's two hops still differ from what its
+// provider now implies. It is what keeps a provider edit that leaves security alone from
+// redeploying the whole fleet.
+//
+// Ingress staleness compares three things, in order of consequence: whether a credential
+// is required at all, then its name, then its location (header vs query). The
+// requirement has to come first — comparing names alone could not see auth being turned
+// off, because a disabled config resolves to the same default name as an enabled one, so
+// a provider switched to None left every dependent proxy demanding a key forever.
+func proxyAuthHeadersStale(proxy *models.LLMProxy, ingress *models.SecurityConfig, upstreamHeader string) (bool, bool) {
+	return proxyIngressStale(proxy, ingress),
+		proxyUpstreamAuthAction(proxy, upstreamHeader) != upstreamAuthUnchanged
 }
 
-// syncProxyAuthHeader brings one proxy's headers in line with its provider's and
-// redeploys it, reporting whether anything actually changed.
-func syncProxyAuthHeader(
+// proxyIngressStale reports whether what the proxy asks its callers for still matches
+// what the provider implies, comparing the requirement before the name and location.
+func proxyIngressStale(proxy *models.LLMProxy, ingress *models.SecurityConfig) bool {
+	current := proxy.Configuration.Security
+	if current.RequiresAPIKey() != ingress.RequiresAPIKey() {
+		return true
+	}
+	if !ingress.RequiresAPIKey() {
+		return false
+	}
+	currentName, currentIn := current.APIKeyNameAndLocation(models.DefaultLLMProxyAPIKeyHeader)
+	targetName, targetIn := ingress.APIKeyNameAndLocation(models.DefaultLLMProxyAPIKeyHeader)
+	return currentName != targetName || currentIn != targetIn
+}
+
+// upstreamAuthAction is what the proxy's upstream hop needs to match its provider.
+type upstreamAuthAction int
+
+const (
+	// upstreamAuthUnchanged: the hop already matches.
+	upstreamAuthUnchanged upstreamAuthAction = iota
+	// upstreamAuthRename: a credential is present but forwarded under the wrong name.
+	upstreamAuthRename
+	// upstreamAuthProvision: the provider requires a credential the proxy does not
+	// carry at all, so one has to be minted before the hop can authenticate.
+	upstreamAuthProvision
+	// upstreamAuthClear: the provider no longer requires a credential, so the proxy
+	// must stop forwarding one.
+	upstreamAuthClear
+)
+
+// proxyUpstreamAuthAction decides what the upstream hop needs. Renaming alone is not
+// enough in both directions: a proxy provisioned while its provider was unsecured has no
+// UpstreamAuth block at all, so enabling api-key auth later used to leave it calling the
+// provider anonymously — a 401 from the provider's own gateway, with nothing on the
+// proxy to explain it. The reverse, a provider switched to None, used to leave the proxy
+// forwarding a credential nothing asks for any more.
+func proxyUpstreamAuthAction(proxy *models.LLMProxy, upstreamHeader string) upstreamAuthAction {
+	upstream := proxy.Configuration.UpstreamAuth
+	hasCredential := upstream != nil && (upstream.SecretRef != nil || upstream.Value != nil)
+
+	if upstreamHeader == "" {
+		if upstream != nil && upstream.Header != nil && strings.TrimSpace(*upstream.Header) != "" {
+			return upstreamAuthClear
+		}
+		return upstreamAuthUnchanged
+	}
+	if !hasCredential {
+		return upstreamAuthProvision
+	}
+	if upstream.Header == nil || *upstream.Header != upstreamHeader {
+		return upstreamAuthRename
+	}
+	return upstreamAuthUnchanged
+}
+
+// nextProxyUpstreamAuth builds the upstream auth block the proxy should carry. A rename
+// reuses the credential already stored; a provision mints a fresh provider API key,
+// because a proxy created while its provider was unsecured has no credential to rename.
+// Nothing is written here — the caller persists it, so a failure leaves the proxy as it
+// was rather than half-converged.
+func (s *LLMProviderService) nextProxyUpstreamAuth(
+	ctx context.Context,
 	proxy *models.LLMProxy,
-	ouID, ingressName, ingressIn, upstreamHeader string,
+	ouID string,
+	provider *models.LLMProvider,
+	upstreamHeader string,
+	action upstreamAuthAction,
+) (*models.UpstreamAuth, error) {
+	switch action {
+	case upstreamAuthClear:
+		// The provider asks for no credential, so the proxy must stop sending one. The
+		// key itself is left minted: revoking it belongs with the proxy's own lifecycle,
+		// and a revoke failure here would strand the proxy mid-sync.
+		return nil, nil
+
+	case upstreamAuthRename:
+		renamed := *proxy.Configuration.UpstreamAuth
+		renamed.Header = utils.StrAsStrPointer(upstreamHeader)
+		return &renamed, nil
+
+	case upstreamAuthProvision:
+		if s.apiKeyService == nil {
+			return nil, fmt.Errorf(
+				"proxy %s needs an upstream credential for provider %s but no api key service is configured",
+				proxy.Handle, provider.Configuration.Handle)
+		}
+		keyName := proxy.Configuration.Name
+		apiKey, err := s.apiKeyService.CreateAPIKey(ctx, ouID, provider.UUID.String(), &models.CreateAPIKeyRequest{
+			Name:        keyName,
+			DisplayName: keyName,
+			Purpose:     models.APIKeyPurposeConsoleManaged,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to mint upstream api key for proxy %s: %w", proxy.Handle, err)
+		}
+		encrypted, err := utils.EncryptBytes([]byte(apiKey.APIKey), s.encryptionKey)
+		if err != nil {
+			if revokeErr := s.apiKeyService.RevokeAPIKey(ctx, ouID, provider.UUID.String(), keyName); revokeErr != nil {
+				slog.Error("nextProxyUpstreamAuth: failed to revoke api key after encryption failure",
+					"proxyHandle", proxy.Handle, "providerUUID", provider.UUID.String(), "error", revokeErr)
+			}
+			return nil, fmt.Errorf("failed to encrypt upstream api key for proxy %s: %w", proxy.Handle, err)
+		}
+		encoded := base64.StdEncoding.EncodeToString(encrypted)
+		return &models.UpstreamAuth{
+			Type:      utils.StrAsStrPointer(models.AuthTypeAPIKey),
+			Header:    utils.StrAsStrPointer(upstreamHeader),
+			SecretRef: &encoded,
+		}, nil
+	}
+	return proxy.Configuration.UpstreamAuth, nil
+}
+
+// syncProxyAuthHeader brings one proxy's ingress and upstream auth in line with its
+// provider's and redeploys it, reporting whether anything actually changed. The ingress
+// target is rebuilt per proxy so each carries its own block rather than sharing one.
+func (s *LLMProviderService) syncProxyAuthHeader(
+	ctx context.Context,
+	proxy *models.LLMProxy,
+	ouID string,
+	provider *models.LLMProvider,
+	upstreamHeader string,
 	proxyService *LLMProxyService,
 	proxyDeploymentService *LLMProxyDeploymentService,
 ) (bool, error) {
-	ingressStale, upstreamStale := proxyAuthHeadersStale(proxy, ingressName, ingressIn, upstreamHeader)
-	if !ingressStale && !upstreamStale {
+	ingress := newProxyIngressSecurity(provider)
+	ingressStale := proxyIngressStale(proxy, ingress)
+	upstreamAction := proxyUpstreamAuthAction(proxy, upstreamHeader)
+	if !ingressStale && upstreamAction == upstreamAuthUnchanged {
 		return false, nil
 	}
 
@@ -1237,18 +1400,29 @@ func syncProxyAuthHeader(
 	// from it. That ordering is why the prior values are kept: the console reads the
 	// stored header to tell agents what to send, so a config left promising a header
 	// no gateway accepts is worse than one that was never updated.
-	var priorIngressKey string
-	var priorIngressIn string
-	var priorUpstream *string
+	//
+	// The whole security block is swapped rather than its fields: a proxy whose
+	// requirement is changing may have no api-key block to write into at all.
+	var priorSecurity *models.SecurityConfig
+	var priorUpstreamAuth *models.UpstreamAuth
 	if ingressStale {
-		priorIngressKey = proxy.Configuration.Security.APIKey.Key
-		priorIngressIn = proxy.Configuration.Security.APIKey.In
-		proxy.Configuration.Security.APIKey.Key = ingressName
-		proxy.Configuration.Security.APIKey.In = ingressIn
+		priorSecurity = proxy.Configuration.Security
+		proxy.Configuration.Security = ingress
 	}
-	if upstreamStale {
-		priorUpstream = proxy.Configuration.UpstreamAuth.Header
-		proxy.Configuration.UpstreamAuth.Header = &upstreamHeader
+	upstreamChanged := upstreamAction != upstreamAuthUnchanged
+	if upstreamChanged {
+		priorUpstreamAuth = proxy.Configuration.UpstreamAuth
+		next, err := s.nextProxyUpstreamAuth(ctx, proxy, ouID, provider, upstreamHeader, upstreamAction)
+		if err != nil {
+			// Nothing has been written yet, so the proxy is untouched. Put the ingress
+			// block back in memory so a caller reusing this struct isn't left with a
+			// half-applied config.
+			if ingressStale {
+				proxy.Configuration.Security = priorSecurity
+			}
+			return false, err
+		}
+		proxy.Configuration.UpstreamAuth = next
 	}
 
 	if _, err := proxyService.Update(proxy.Handle, ouID, proxy); err != nil {
@@ -1257,11 +1431,10 @@ func syncProxyAuthHeader(
 
 	restoreStoredHeaders := func() {
 		if ingressStale {
-			proxy.Configuration.Security.APIKey.Key = priorIngressKey
-			proxy.Configuration.Security.APIKey.In = priorIngressIn
+			proxy.Configuration.Security = priorSecurity
 		}
-		if upstreamStale {
-			proxy.Configuration.UpstreamAuth.Header = priorUpstream
+		if upstreamChanged {
+			proxy.Configuration.UpstreamAuth = priorUpstreamAuth
 		}
 		if _, err := proxyService.Update(proxy.Handle, ouID, proxy); err != nil {
 			slog.Error("syncProxyAuthHeader: failed to restore headers after a failed redeploy",
@@ -1276,6 +1449,8 @@ func syncProxyAuthHeader(
 	}
 
 	redeployed := 0
+	var stragglers []error
+	var straggleGateways []string
 	for _, deployment := range deployments {
 		if deployment.Status == nil || *deployment.Status != models.DeploymentStatusDeployed {
 			continue
@@ -1285,21 +1460,33 @@ func syncProxyAuthHeader(
 			Base:      "current",
 			GatewayID: deployment.GatewayUUID.String(),
 		}, ouID); err != nil {
-			// Nothing took the new header yet, so putting the store back leaves the
-			// proxy exactly as it was. Once one gateway has accepted it there is no
-			// value that matches every gateway, and an operator has to converge it.
-			if redeployed == 0 {
+			// Nothing took the new config yet, so putting the store back leaves the
+			// proxy exactly as it was.
+			if redeployed == 0 && len(stragglers) == 0 {
 				restoreStoredHeaders()
 				return false, fmt.Errorf("failed to redeploy proxy %s on gateway %s: %w",
 					proxy.Handle, deployment.GatewayUUID, err)
 			}
-			slog.Error("syncProxyAuthHeader: proxy left serving different headers per gateway",
-				"proxyHandle", proxy.Handle, "gatewayUUID", deployment.GatewayUUID,
-				"redeployedCount", redeployed, "storedHeader", ingressName, "storedIn", ingressIn)
-			return true, fmt.Errorf("failed to redeploy proxy %s on gateway %s: %w",
-				proxy.Handle, deployment.GatewayUUID, err)
+			// Once a gateway has accepted the new config there is no single value that
+			// matches the whole fleet, so rolling back would strand the ones that did
+			// converge. Carry on instead of returning: every remaining gateway that can
+			// take the new config is one fewer left inconsistent, and the collected
+			// errors name exactly which ones an operator still has to converge.
+			stragglers = append(stragglers, fmt.Errorf("gateway %s: %w", deployment.GatewayUUID, err))
+			straggleGateways = append(straggleGateways, deployment.GatewayUUID.String())
+			continue
 		}
 		redeployed++
+	}
+
+	if len(stragglers) > 0 {
+		storedName, storedIn := ingress.APIKeyNameAndLocation(models.DefaultLLMProxyAPIKeyHeader)
+		slog.Error("syncProxyAuthHeader: proxy left serving different auth config per gateway",
+			"proxyHandle", proxy.Handle, "staleGateways", strings.Join(straggleGateways, ","),
+			"redeployedCount", redeployed, "storedHeader", storedName, "storedIn", storedIn,
+			"storedRequiresAPIKey", ingress.RequiresAPIKey())
+		return true, fmt.Errorf("proxy %s: %d of %d gateways left on the previous auth config: %w",
+			proxy.Handle, len(stragglers), redeployed+len(stragglers), errors.Join(stragglers...))
 	}
 
 	return true, nil
