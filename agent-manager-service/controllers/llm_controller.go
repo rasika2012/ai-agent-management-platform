@@ -513,6 +513,43 @@ func (c *llmController) GetLLMProvider(w http.ResponseWriter, r *http.Request) {
 	utils.WriteSuccessResponse(w, http.StatusOK, response)
 }
 
+// preserveOmittedProviderFields carries forward optional fields the request left out.
+// The repository replaces the whole configuration document, so without this a partial
+// update silently clears everything it didn't mention — including security, leaving the
+// provider and its proxies requiring no credential. Restored on the model because the
+// request carries spec types. For slices, nil means omitted; an empty list still clears.
+func preserveOmittedProviderFields(
+	provider *models.LLMProvider,
+	existing *models.LLMProvider,
+	req *spec.UpdateLLMProviderRequest,
+) {
+	if provider == nil || existing == nil || req == nil {
+		return
+	}
+	if req.Resilience == nil {
+		provider.Configuration.Resilience = existing.Configuration.Resilience
+	}
+	if req.Security == nil {
+		provider.Configuration.Security = existing.Configuration.Security
+	}
+	if req.AccessControl == nil {
+		provider.Configuration.AccessControl = existing.Configuration.AccessControl
+	}
+	if req.RateLimiting == nil {
+		provider.Configuration.RateLimiting = existing.Configuration.RateLimiting
+	}
+	if req.Policies == nil {
+		provider.Configuration.Policies = existing.Configuration.Policies
+	}
+	if req.ModelProviders == nil {
+		provider.ModelProviders = existing.ModelProviders
+		provider.ModelList = existing.ModelList
+	}
+	if req.Openapi == nil {
+		provider.OpenAPISpec = existing.OpenAPISpec
+	}
+}
+
 func (c *llmController) UpdateLLMProvider(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	log := logger.GetLogger(ctx)
@@ -588,9 +625,7 @@ func (c *llmController) UpdateLLMProvider(w http.ResponseWriter, r *http.Request
 	}
 
 	provider := utils.ConvertSpecToModelLLMProvider(providerReq, ouID)
-	if req.Resilience == nil {
-		provider.Configuration.Resilience = existing.Configuration.Resilience
-	}
+	preserveOmittedProviderFields(provider, existing, &req)
 
 	// Preserve upstream directly from the stored model to avoid the spec converter
 	// masking credentials with "***REDACTED***" (H-3). If the request supplies a new

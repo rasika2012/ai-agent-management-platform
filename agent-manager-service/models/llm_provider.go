@@ -221,16 +221,9 @@ func (s *SecurityConfig) APIKeyNameAndLocation(defName string) (name, in string)
 	return defName, in
 }
 
-// RequiresAPIKey reports whether this config asks callers for an API key. Turning it
-// off has to be explicit: security.apiKey.enabled must be true, and security.enabled
-// must not be false. An absent security.enabled counts as enabled, matching what the
-// console has always persisted and what every proxy provisioned so far was given.
-//
-// That last part is deliberate rather than tidy. The deployment translators read an
-// absent security.enabled as off, so a config shaped that way is inconsistent either
-// way — but treating it as off here would make a provider edit silently drop the api
-// key requirement from proxies that are enforcing one today, which is the worse of the
-// two inconsistencies. Only an explicit false removes a credential requirement.
+// RequiresAPIKey reports whether this config asks callers for an API key. Only an
+// explicit false removes the requirement: an absent security.enabled counts as enabled,
+// so a provider edit can't silently drop the key from proxies enforcing one today.
 func (s *SecurityConfig) RequiresAPIKey() bool {
 	return s != nil &&
 		(s.Enabled == nil || *s.Enabled) &&
@@ -238,15 +231,10 @@ func (s *SecurityConfig) RequiresAPIKey() bool {
 		s.APIKey.Enabled != nil && *s.APIKey.Enabled
 }
 
-// ValidateAPIKeyLocation rejects an api-key location the gateway cannot enforce. The
-// api-key-auth policy every proxy is deployed with declares its own `in` parameter as
-// enum: ["header"] and reads the credential from a header only, so a config stored with
-// any other location yields proxies that 401 every request with nothing in the response
-// explaining why. Refusing it at the write keeps that unauthenticatable state from being
-// reachable at all. A blank location is accepted and resolves to the default, "header".
-//
-// This is the single definition of that rule: callers that need a typed error wrap it
-// rather than restating which locations are allowed.
+// ValidateAPIKeyLocation rejects a location the gateway cannot enforce. The api-key-auth
+// policy declares `in` as enum: ["header"], so anything else yields proxies that 401
+// every request. Blank means the default, "header". Single definition of the rule —
+// callers needing a typed error wrap it.
 func (s *SecurityConfig) ValidateAPIKeyLocation() error {
 	if s == nil || s.APIKey == nil {
 		return nil
