@@ -47,15 +47,17 @@ const API_KEY_LOCATION = "header";
 type StoredAPIKeyConfig = { enabled?: boolean; key?: string; in?: string };
 
 /**
- * The saved security config as this form sees it. A key counts as configured only when
- * it is both turned on and non-blank, matching how the backend decides whether a proxy
- * actually requires a credential — the form must not show "apiKey" for a provider that
- * would be provisioned without one.
+ * The saved security config as this form sees it, mirroring SecurityConfig.RequiresAPIKey
+ * on the backend so the form never shows "apiKey" for a provider that would be
+ * provisioned without one. A key counts as configured only when api-key auth is
+ * explicitly on, global security is not explicitly off, and the key is non-blank. An
+ * absent global flag counts as enabled, which is what the console has always written.
  */
 function readStoredSecurity(providerData: LLMProviderResponse) {
   const apiKeyConfig = providerData.security?.apiKey as StoredAPIKeyConfig | undefined;
   const key = (apiKeyConfig?.key ?? "").trim();
-  const hasApiKey = !!apiKeyConfig && apiKeyConfig.enabled !== false && !!key;
+  const securityEnabled = providerData.security?.enabled !== false;
+  const hasApiKey = securityEnabled && apiKeyConfig?.enabled === true && !!key;
   return {
     authenticationType: hasApiKey ? ("apiKey" as const) : ("none" as const),
     key: apiKeyConfig?.key ?? "",

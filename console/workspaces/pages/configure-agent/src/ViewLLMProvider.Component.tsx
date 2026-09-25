@@ -87,6 +87,20 @@ function generateDisplayName(key: string): string {
   }
 }
 
+// A blank model makes every request fail with "you must provide a model parameter", so
+// the sample names one. The catalog entry carries no model list, so these are examples
+// keyed off the same template the SDK snippets switch on — a reader is expected to swap
+// in whatever their provider actually serves. Templates whose IDs are region- or
+// version-specific (Bedrock) are left to the placeholder rather than guessed at.
+const EXAMPLE_MODEL_BY_TEMPLATE: Record<string, string> = {
+  openai: "gpt-4o-mini",
+  "azure-openai": "gpt-4o-mini",
+  "azureai-foundry": "gpt-4o-mini",
+  anthropic: "claude-sonnet-4-5",
+  gemini: "gemini-2.0-flash",
+  mistralai: "mistral-small-latest",
+};
+
 function getClientSetupSnippet(
   templateId: string | undefined,
   varKeys: string[],
@@ -839,7 +853,10 @@ export const ViewLLMProviderComponent: React.FC = () => {
       the SDK client below doesn&apos;t set this for you.
     </>
   ) : (
-    <>Requests must carry the API key in the {authCodeChip(authHeaderName)} header. The snippet sets it for you.</>
+    <>
+      Requests must carry the API key in the {authCodeChip(authHeaderName)} header.
+      The snippet sets it for you.
+    </>
   );
 
   const integrationGuide = (
@@ -957,9 +974,16 @@ export const ViewLLMProviderComponent: React.FC = () => {
             const headerValue = authEntry?.value || (apiKeyEnvVar ? `$${apiKeyEnvVar.name}` : "<api-key>");
             const entryIsQueryAuth = (authEntry?.in || authIn) === "query";
             const endpointUrl = providerConfig.url || "<endpoint-url>";
-            const requestUrl = `${endpointUrl}/chat/completions`;
+            // Single-quoted: an endpoint carrying a query string or any other shell
+            // metacharacter would otherwise be split by the shell before curl sees it.
+            const requestUrl = `'${endpointUrl}/chat/completions'`;
+            const exampleModel =
+              EXAMPLE_MODEL_BY_TEMPLATE[catalogProvider?.template ?? ""] ?? "<model-id>";
             const curlCode = [
               `curl -X POST ${requestUrl}`,
+              // curl sends -d as application/x-www-form-urlencoded unless told
+              // otherwise, which every OpenAI-compatible endpoint rejects.
+              `  --header "Content-Type: application/json"`,
               !noAuthRequired && !entryIsQueryAuth ? `  --header "${headerName}: ${headerValue}"` : null,
               // --url-query appends to the query string itself, so the URL above stays
               // copy-pasteable whatever the endpoint already carries. curl encodes the
@@ -968,7 +992,7 @@ export const ViewLLMProviderComponent: React.FC = () => {
               !noAuthRequired && entryIsQueryAuth
                 ? `  --url-query "${encodeURIComponent(headerName)}=${headerValue}"`
                 : null,
-              `  -d '{"model": "", "messages": [{"role": "user", "content": "Hi..."}]}'`,
+              `  -d '{"model": "${exampleModel}", "messages": [{"role": "user", "content": "Hi..."}]}'`,
             ]
               .filter(Boolean)
               .join(" \\\n");

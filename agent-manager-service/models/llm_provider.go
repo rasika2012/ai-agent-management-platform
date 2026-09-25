@@ -221,15 +221,19 @@ func (s *SecurityConfig) APIKeyNameAndLocation(defName string) (name, in string)
 	return defName, in
 }
 
-// RequiresAPIKey reports whether this config makes the gateway actually demand an API
-// key. It is the same condition the deployment translators use when deciding to emit the
-// api-key-auth policy: both flags must be explicitly true, because an absent flag emits
-// no policy at all. Anything that reports a credential requirement to agents, or decides
-// whether to provision one, has to read it the same way — otherwise the platform either
-// promises a credential the gateway never checks, or enforces one it never announced.
+// RequiresAPIKey reports whether this config asks callers for an API key. Turning it
+// off has to be explicit: security.apiKey.enabled must be true, and security.enabled
+// must not be false. An absent security.enabled counts as enabled, matching what the
+// console has always persisted and what every proxy provisioned so far was given.
+//
+// That last part is deliberate rather than tidy. The deployment translators read an
+// absent security.enabled as off, so a config shaped that way is inconsistent either
+// way — but treating it as off here would make a provider edit silently drop the api
+// key requirement from proxies that are enforcing one today, which is the worse of the
+// two inconsistencies. Only an explicit false removes a credential requirement.
 func (s *SecurityConfig) RequiresAPIKey() bool {
 	return s != nil &&
-		s.Enabled != nil && *s.Enabled &&
+		(s.Enabled == nil || *s.Enabled) &&
 		s.APIKey != nil &&
 		s.APIKey.Enabled != nil && *s.APIKey.Enabled
 }

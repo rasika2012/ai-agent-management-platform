@@ -240,7 +240,7 @@ func validateProxyAPIKeyLocation(provider *models.LLMProvider) error {
 		return nil
 	}
 	if err := provider.Configuration.Security.ValidateAPIKeyLocation(); err != nil {
-		return fmt.Errorf("%w: %s", utils.ErrInvalidInput, err)
+		return fmt.Errorf("%w: %w", utils.ErrInvalidInput, err)
 	}
 	return nil
 }
@@ -588,12 +588,6 @@ func (s *LLMProviderService) Update(ctx context.Context, providerID, ouID string
 			return nil, err
 		}
 	}
-	if err := validateProxyAPIKeyLocation(updates); err != nil {
-		slog.Warn("LLMProviderService.Update: unsupported api key location", "ouID", ouID, "providerID", providerID, "error", err)
-		return nil, err
-	}
-	applyDefaultProxyAPIKeyHeader(updates)
-
 	if err := updates.Configuration.Resilience.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: %w", utils.ErrInvalidInput, err)
 	}
@@ -634,6 +628,20 @@ func (s *LLMProviderService) Update(ctx context.Context, providerID, ouID string
 		return nil, utils.ErrLLMProviderNotFound
 	}
 	apiKeyAuthWasEnabled := isAPIKeyAuthEnabled(existing.Configuration.Security)
+
+	// Only vet the location when this update actually touches provider security. A row
+	// stored with an unsupported location predates the rule, and rejecting it on every
+	// unrelated edit would make that row uneditable — a caller doing read-modify-write
+	// to change a description would be refused for a field it never touched, with no
+	// way to fix it through the same API. Changing security still has to produce a
+	// location the gateway can enforce.
+	if ProviderAuthHeadersChanged(existing, updates) {
+		if err := validateProxyAPIKeyLocation(updates); err != nil {
+			slog.Warn("LLMProviderService.Update: unsupported api key location", "ouID", ouID, "providerID", providerID, "error", err)
+			return nil, err
+		}
+	}
+	applyDefaultProxyAPIKeyHeader(updates)
 
 	// Update provider
 	slog.Info("LLMProviderService.Update: updating provider in database", "ouID", ouID, "providerID", providerID)
@@ -1319,11 +1327,12 @@ func proxyUpstreamAuthAction(proxy *models.LLMProxy, upstreamHeader string) upst
 	return upstreamAuthUnchanged
 }
 
-// nextProxyUpstreamAuth builds the upstream auth block the proxy should carry. A rename
-// reuses the credential already stored; a provision mints a fresh provider API key,
-// because a proxy created while its provider was unsecured has no credential to rename.
-// Nothing is written here — the caller persists it, so a failure leaves the proxy as it
-// was rather than half-converged.
+// nextProxyUpstreamAuth builds the upstream auth block the proxy should carry when it
+// needs one. A rename reuses the credential already stored; a provision mints a fresh
+// provider API key, because a proxy created while its provider was unsecured has no
+// credential to rename. Clearing is the caller's business — it has no block to build.
+// Nothing is written here either: the caller persists it, so a failure leaves the proxy
+// as it was rather than half-converged.
 func (s *LLMProviderService) nextProxyUpstreamAuth(
 	ctx context.Context,
 	proxy *models.LLMProxy,
@@ -1333,12 +1342,6 @@ func (s *LLMProviderService) nextProxyUpstreamAuth(
 	action upstreamAuthAction,
 ) (*models.UpstreamAuth, error) {
 	switch action {
-	case upstreamAuthClear:
-		// The provider asks for no credential, so the proxy must stop sending one. The
-		// key itself is left minted: revoking it belongs with the proxy's own lifecycle,
-		// and a revoke failure here would strand the proxy mid-sync.
-		return nil, nil
-
 	case upstreamAuthRename:
 		renamed := *proxy.Configuration.UpstreamAuth
 		renamed.Header = utils.StrAsStrPointer(upstreamHeader)
@@ -1374,7 +1377,8 @@ func (s *LLMProviderService) nextProxyUpstreamAuth(
 			SecretRef: &encoded,
 		}, nil
 	}
-	return proxy.Configuration.UpstreamAuth, nil
+	return nil, fmt.Errorf(
+		"proxy %s: upstream auth action %d does not build a credential", proxy.Handle, action)
 }
 
 // syncProxyAuthHeader brings one proxy's ingress and upstream auth in line with its
@@ -1412,17 +1416,24 @@ func (s *LLMProviderService) syncProxyAuthHeader(
 	upstreamChanged := upstreamAction != upstreamAuthUnchanged
 	if upstreamChanged {
 		priorUpstreamAuth = proxy.Configuration.UpstreamAuth
-		next, err := s.nextProxyUpstreamAuth(ctx, proxy, ouID, provider, upstreamHeader, upstreamAction)
-		if err != nil {
-			// Nothing has been written yet, so the proxy is untouched. Put the ingress
-			// block back in memory so a caller reusing this struct isn't left with a
-			// half-applied config.
-			if ingressStale {
-				proxy.Configuration.Security = priorSecurity
+		if upstreamAction == upstreamAuthClear {
+			// The provider asks for no credential, so the proxy must stop sending one.
+			// The key itself is left minted: revoking it belongs with the proxy's own
+			// lifecycle, and a revoke failure here would strand the proxy mid-sync.
+			proxy.Configuration.UpstreamAuth = nil
+		} else {
+			next, err := s.nextProxyUpstreamAuth(ctx, proxy, ouID, provider, upstreamHeader, upstreamAction)
+			if err != nil {
+				// Nothing has been written yet, so the proxy is untouched. Put the
+				// ingress block back in memory so a caller reusing this struct isn't
+				// left with a half-applied config.
+				if ingressStale {
+					proxy.Configuration.Security = priorSecurity
+				}
+				return false, err
 			}
-			return false, err
+			proxy.Configuration.UpstreamAuth = next
 		}
-		proxy.Configuration.UpstreamAuth = next
 	}
 
 	if _, err := proxyService.Update(proxy.Handle, ouID, proxy); err != nil {
