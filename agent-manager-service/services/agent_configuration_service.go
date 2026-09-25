@@ -496,16 +496,10 @@ func providerProxyAPIKeySecurity(provider *models.LLMProvider) (name, in string)
 	return provider.Configuration.Security.APIKeyNameAndLocation(models.DefaultLLMProxyAPIKeyHeader)
 }
 
-// newProxyIngressSecurity builds the ingress security block for a proxy provisioned in
-// front of the given provider, taking the provider's own configured name, location, and
-// crucially whether a credential is required at all. Shared by every place that
-// provisions a new proxy and by the resync path, so they can't drift.
-//
-// The requirement used to be hardcoded on, which meant a provider with authentication
-// set to None still produced a proxy demanding the default API-Key header — and since
-// disabling auth also revokes the provider's keys, that proxy could not be called at
-// all. The name and location are kept even when no credential is required, so turning
-// auth back on restores what the admin configured rather than a default.
+// newProxyIngressSecurity builds a proxy's ingress security from its provider: name,
+// location, and whether a credential is required at all. The requirement used to be
+// hardcoded on, so a provider set to None still produced a proxy demanding API-Key.
+// Name and location are kept when off, so re-enabling restores what was configured.
 func newProxyIngressSecurity(provider *models.LLMProvider) *models.SecurityConfig {
 	var providerSecurity *models.SecurityConfig
 	if provider != nil {

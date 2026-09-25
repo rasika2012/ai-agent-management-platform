@@ -199,14 +199,10 @@ type APIKeySecurity struct {
 	In      string `json:"in,omitempty" yaml:"in,omitempty"`
 }
 
-// APIKeyNameAndLocation returns the API-key credential's parameter name and where it
-// is carried ("header" or "query"), defaulting the name to defName and the location to
-// "header" when nothing is configured. It never discards a configured name just because
-// the location isn't "header": a legacy query-based proxy's real parameter name is still
-// worth reporting accurately, not silently replaced by a header-oriented default.
-//
-// New writes are held to header-only by ValidateAPIKeyLocation; this reports what is
-// actually stored, so rows written before that rule still describe themselves honestly.
+// APIKeyNameAndLocation returns the credential's parameter name and location, defaulting
+// to defName and "header". It reports what is actually stored rather than coercing, so
+// legacy query-based rows still describe themselves accurately; new writes are held to
+// header-only by ValidateAPIKeyLocation.
 func (s *SecurityConfig) APIKeyNameAndLocation(defName string) (name, in string) {
 	if s == nil || s.APIKey == nil {
 		return defName, "header"

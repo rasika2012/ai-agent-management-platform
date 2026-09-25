@@ -38,20 +38,15 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 
-// The gateway's api-key-auth policy reads the credential from a header and nothing
-// else — its own `in` parameter is declared `enum: ["header"]`. Offering a location
-// choice here produced providers the gateway could never authenticate, so the value
-// is fixed rather than selectable.
+// The api-key-auth policy declares `in` as enum: ["header"], so a location choice here
+// produced providers the gateway could never authenticate. Fixed, not selectable.
 const API_KEY_LOCATION = "header";
 
 type StoredAPIKeyConfig = { enabled?: boolean; key?: string; in?: string };
 
 /**
- * The saved security config as this form sees it, mirroring SecurityConfig.RequiresAPIKey
- * on the backend so the form never shows "apiKey" for a provider that would be
- * provisioned without one. A key counts as configured only when api-key auth is
- * explicitly on, global security is not explicitly off, and the key is non-blank. An
- * absent global flag counts as enabled, which is what the console has always written.
+ * The saved security config, mirroring SecurityConfig.RequiresAPIKey on the backend so
+ * the form never shows "apiKey" for a provider provisioned without one.
  */
 function readStoredSecurity(providerData: LLMProviderResponse) {
   const apiKeyConfig = providerData.security?.apiKey as StoredAPIKeyConfig | undefined;

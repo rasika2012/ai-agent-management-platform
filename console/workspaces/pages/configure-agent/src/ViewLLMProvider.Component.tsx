@@ -87,11 +87,9 @@ function generateDisplayName(key: string): string {
   }
 }
 
-// A blank model makes every request fail with "you must provide a model parameter", so
-// the sample names one. The catalog entry carries no model list, so these are examples
-// keyed off the same template the SDK snippets switch on — a reader is expected to swap
-// in whatever their provider actually serves. Templates whose IDs are region- or
-// version-specific (Bedrock) are left to the placeholder rather than guessed at.
+// A blank model fails with "you must provide a model parameter". The catalog carries no
+// model list, so these are examples keyed off the template. Bedrock is omitted on
+// purpose — its IDs are region- and version-specific.
 const EXAMPLE_MODEL_BY_TEMPLATE: Record<string, string> = {
   openai: "gpt-4o-mini",
   "azure-openai": "gpt-4o-mini",
@@ -112,12 +110,10 @@ function getClientSetupSnippet(
   // Without a template every snippet below would render `undefined` somewhere and fail
   // on paste — show none at all instead.
   if (!templateId) return null;
-  // A proxy that requires no credential is deployed without an apikey variable, so
-  // there is nothing to read one from. The SDKs below still reject an empty api_key at
-  // construction, so pass a placeholder rather than dropping the snippet entirely —
-  // an unsecured proxy still needs the base_url wiring, which is the whole point of
-  // the guide. It stays a bare literal: these render inside argument lists, so a
-  // trailing comment would swallow the comma after it.
+  // An unsecured proxy has no apikey variable, but the SDKs still reject an empty
+  // api_key, so pass a placeholder rather than dropping the snippet — the base_url
+  // wiring is the point. Bare literal: these render inside argument lists, where a
+  // trailing comment would swallow the comma.
   const apiKeyKey = apiKeyVar ?? '"unused-by-this-proxy"';
   // Every branch below only knows how to attach the credential as a header. A proxy
   // that reads it from the query string instead needs a different mechanism per
@@ -985,10 +981,8 @@ export const ViewLLMProviderComponent: React.FC = () => {
               // otherwise, which every OpenAI-compatible endpoint rejects.
               `  --header "Content-Type: application/json"`,
               !noAuthRequired && !entryIsQueryAuth ? `  --header "${headerName}: ${headerValue}"` : null,
-              // --url-query appends to the query string itself, so the URL above stays
-              // copy-pasteable whatever the endpoint already carries. curl encodes the
-              // value and expects the name pre-encoded, hence the asymmetry: the key is
-              // left raw (it is often a shell variable to expand), the name is escaped.
+              // curl encodes the value but expects the name pre-encoded, hence the
+              // asymmetry — the value is often a shell variable to expand.
               !noAuthRequired && entryIsQueryAuth
                 ? `  --url-query "${encodeURIComponent(headerName)}=${headerValue}"`
                 : null,
