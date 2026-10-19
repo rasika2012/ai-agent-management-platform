@@ -108,6 +108,22 @@ function SecurityRouteElement() {
   const { agentId } = useParams();
   return <LazySecurityComponent key={agentId} />;
 }
+
+// The settings forms seed their fields once and then save against whatever the
+// current route params point at, so switching project/agent without a remount
+// would show the previous entity's values and write them to the new one.
+function ProjectSettingsRouteElement() {
+  const { projectId } = useParams();
+  return <LazySettingsProject key={projectId} />;
+}
+
+// Keyed on the project too: agent names are only unique within a project, so
+// the same agentId under a different project must still remount.
+function AgentSettingsRouteElement() {
+  const { projectId, agentId } = useParams();
+  return <LazySettingsComponent key={`${projectId}/${agentId}`} />;
+}
+
 // Reports one page view per navigation.
 //
 // Mounted once here, inside BrowserRouter and beside Routes, rather than per
@@ -395,7 +411,7 @@ export function RootRouter() {
                 }
                 element={
                   <Suspense fallback={<LoadingFallback />}>
-                    <LazySettingsProject />
+                    <ProjectSettingsRouteElement />
                   </Suspense>
                 }
               />
@@ -436,7 +452,7 @@ export function RootRouter() {
                   }
                   element={
                     <Suspense fallback={<LoadingFallback />}>
-                      <LazySettingsComponent />
+                      <AgentSettingsRouteElement />
                     </Suspense>
                   }
                 />
