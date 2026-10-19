@@ -31,6 +31,7 @@ import {
 } from "@agent-management-platform/views";
 import { AgentTypeChips, LabelChips } from "@agent-management-platform/shared-component";
 
+/** Placeholder for the overview body while the agent is still loading. */
 function AgentOverviewSkeleton() {
     return (
         <Box display="flex" flexDirection="column" gap={4} width="100%">
@@ -39,6 +40,7 @@ function AgentOverviewSkeleton() {
     );
 }
 
+/** Agent landing page: identity, metadata, and a body that varies by provisioning type. */
 export function AgentOverview() {
     const { orgId, agentId, projectId } = useParams();
     const { data: agent, isLoading: isAgentLoading } = useGetAgent({

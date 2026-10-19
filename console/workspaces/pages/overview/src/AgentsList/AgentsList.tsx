@@ -68,6 +68,7 @@ import {
   useConfirmationDialog,
 } from "@agent-management-platform/shared-component";
 
+/** Placeholder for the whole two-column agent list, including the summary rail. */
 export function ListPageSkeleton() {
   return (
     <Stack direction="row" justifyContent="space-between" gap={4}>
@@ -111,6 +112,7 @@ export interface AgentWithHref extends AgentResponse {
   agentInfo: { name: string; displayName: string; description: string };
 }
 
+/** Project landing page: the project's agents, with search, pagination and a type summary. */
 export const AgentsList: React.FC = () => {
   const [search, setSearch] = useState("");
   const [hoveredAgentId, setHoveredAgentId] = useState<string | null>(null);

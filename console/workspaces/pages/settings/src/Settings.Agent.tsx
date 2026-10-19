@@ -73,6 +73,7 @@ const agentSettingsSchema = z.object({
   labels: z.record(z.string(), z.string()),
 });
 
+/** Agent-scope Settings: edits display name, description and labels. */
 export const SettingsAgent: React.FC = () => {
   const { orgId, projectId, agentId } = useParams<{
     orgId: string;

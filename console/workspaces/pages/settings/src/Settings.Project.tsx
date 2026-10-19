@@ -60,6 +60,10 @@ import { SettingsLayout, type SubNavSection } from "./SettingsLayout";
 const projectSettingsRoute =
   absoluteRouteMap.children.org.children.projects.children.settings;
 
+/**
+ * A pipeline's promotion path as `dev → staging → prod`, using environment
+ * display names. Null when the pipeline has no paths configured.
+ */
 function pipelineChainLabel(
   pipeline: DeploymentPipelineResponse,
   envDisplayNameMap: Map<string, string>,
@@ -73,6 +77,7 @@ function pipelineChainLabel(
   return names.map((n) => envDisplayNameMap.get(n) ?? n).join(" → ");
 }
 
+/** A pipeline's name with its promotion chain beside it (row) or beneath it (column). */
 function PipelineLabel({
   pipeline,
   envDisplayNameMap,
@@ -118,6 +123,7 @@ const projectSettingsSchema = z.object({
     .min(1, "Deployment pipeline is required"),
 });
 
+/** Project-scope Settings: edits display name, description and deployment pipeline. */
 export const SettingsProject: React.FC = () => {
   const { orgId, projectId } = useParams<{
     orgId: string;

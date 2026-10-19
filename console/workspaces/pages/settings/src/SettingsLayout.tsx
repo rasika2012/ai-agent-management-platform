@@ -57,6 +57,10 @@ const ICON_SX_INACTIVE = { minWidth: 36, color: "inherit" } as const;
 const TEXT_SX_ACTIVE = { color: "text.secondary" } as const;
 const TEXT_SX_INACTIVE = { color: "inherit" } as const;
 
+/**
+ * Shell shared by the organization, project and agent Settings pages: the
+ * page header, the sub-navigation rail, and the content pane beside it.
+ */
 export const SettingsLayout: React.FC<SettingsLayoutProps> = ({
   children,
   sections,

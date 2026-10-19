@@ -40,6 +40,10 @@ const IdentitiesOrganization = lazy(() =>
   })),
 );
 
+/**
+ * The organization rail — Users, Groups and Roles, each shown only when the
+ * caller holds the identity scopes that page needs.
+ */
 function useOrganizationSections(): SubNavSection[] {
   const { orgId } = useParams<{ orgId: string }>();
   const visibility = useIdentityVisibility();
@@ -74,6 +78,7 @@ function useOrganizationSections(): SubNavSection[] {
   return items.length > 0 ? [{ title: "User Management", items }] : [];
 }
 
+/** Organization-scope Settings: hosts the identity pages under the shared rail. */
 export const SettingsOrganization: React.FC = () => {
   const sections = useOrganizationSections();
   return (

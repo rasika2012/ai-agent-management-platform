@@ -89,9 +89,11 @@ import {
 } from "@agent-management-platform/api-client";
 import { MountPoints } from "../types";
 
-// Back-compat redirect: the Identities pages (users/roles/groups) moved from
-// /org/:orgId/identities/* to /org/:orgId/settings/identities/*. Preserve any
-// trailing sub-path so existing deep links keep working.
+/**
+ * Back-compat redirect: the Identities pages (users/roles/groups) moved from
+ * /org/:orgId/identities/* to /org/:orgId/settings/identities/*. Preserves any
+ * trailing sub-path so existing deep links keep working.
+ */
 function LegacyIdentitiesRedirect() {
   const { orgId, "*": rest } = useParams<{ orgId: string; "*": string }>();
   const base = generatePath(
@@ -101,41 +103,53 @@ function LegacyIdentitiesRedirect() {
   return <Navigate to={rest ? `${base}/${rest}` : base} replace />;
 }
 
-// Remounts the Security page on agent change so per-agent component state
-// (Create-key dialog open flag, newly-issued-key banner) does not leak
-// between agents when navigating via the sidebar.
+/**
+ * Remounts the Security page on agent change so per-agent component state
+ * (Create-key dialog open flag, newly-issued-key banner) does not leak
+ * between agents when navigating via the sidebar.
+ */
 function SecurityRouteElement() {
   const { agentId } = useParams();
   return <LazySecurityComponent key={agentId} />;
 }
 
-// The settings forms seed their fields once and then save against whatever the
-// current route params point at, so switching project/agent without a remount
-// would show the previous entity's values and write them to the new one.
+/**
+ * The settings forms seed their fields once and then save against whatever the
+ * current route params point at, so switching project without a remount would
+ * show the previous project's values and write them to the new one.
+ */
 function ProjectSettingsRouteElement() {
   const { projectId } = useParams();
   return <LazySettingsProject key={projectId} />;
 }
 
-// Keyed on the project too: agent names are only unique within a project, so
-// the same agentId under a different project must still remount.
+/**
+ * As above, keyed on the project too: agent names are only unique within a
+ * project, so the same agentId under a different project must still remount.
+ */
 function AgentSettingsRouteElement() {
   const { projectId, agentId } = useParams();
   return <LazySettingsComponent key={`${projectId}/${agentId}`} />;
 }
 
-// Reports one page view per navigation.
-//
-// Mounted once here, inside BrowserRouter and beside Routes, rather than per
-// page: a single caller means no page can be forgotten and none can
-// double-report. It renders nothing and is inert unless console analytics is
-// enabled — see usePageViewTracking.
+/**
+ * Reports one page view per navigation.
+ *
+ * Mounted once here, inside BrowserRouter and beside Routes, rather than per
+ * page: a single caller means no page can be forgotten and none can
+ * double-report. It renders nothing and is inert unless console analytics is
+ * enabled — see usePageViewTracking.
+ */
 function PageViewTracker() {
   const { pathname } = useLocation();
   usePageViewTracking(pathname);
   return null;
 }
 
+/**
+ * Shared body for the org/project/agent guards: a spinner while the entity
+ * resolves, an error page if it does not, otherwise the nested routes.
+ */
 function GuardedOutlet({
   isLoading,
   isError,
@@ -162,6 +176,7 @@ function GuardedOutlet({
   );
 }
 
+/** Blocks the org subtree until the organization is known to exist and be visible. */
 function OrgGuard() {
   const { orgId } = useParams();
   const { data, isLoading, error } = useListOrganizations();
@@ -186,6 +201,7 @@ function OrgGuard() {
   );
 }
 
+/** Blocks the project subtree until the project resolves. */
 function ProjectGuard() {
   const { orgId, projectId } = useParams();
   const { isLoading, isError } = useGetProject({
@@ -202,6 +218,7 @@ function ProjectGuard() {
   );
 }
 
+/** Blocks the agent subtree until the agent resolves. */
 function AgentGuard() {
   const { orgId, projectId, agentId } = useParams();
   const { isLoading, isError } = useGetAgent({
@@ -219,6 +236,7 @@ function AgentGuard() {
   );
 }
 
+/** The console's whole route tree, from login through to the agent-scoped pages. */
 export function RootRouter() {
   const externalOrgPageModules = useExternalPageModules();
 

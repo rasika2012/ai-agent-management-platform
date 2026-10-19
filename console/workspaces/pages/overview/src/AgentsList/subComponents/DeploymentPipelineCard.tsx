@@ -42,6 +42,10 @@ const CARD_SX = {
   flexGrow: 1,
 };
 
+/**
+ * Read-only summary of the project's deployment pipeline and its environments.
+ * Both edit affordances link out to project settings.
+ */
 export function DeploymentPipelineCard() {
   const { orgId, projectId } = useParams<{ orgId: string; projectId: string }>();
 
