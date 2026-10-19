@@ -20,10 +20,8 @@ import { useGetAgent, useGetAgentKind, useUserDisplayName } from "@agent-managem
 import { InternalAgentOverview } from "./InternalAgentOverview";
 import { useParams } from "react-router-dom";
 import { ExternalAgentOverview } from "./ExternalAgentOverview";
-import { useState } from "react";
-import { Box, Button, Divider, Skeleton, Stack } from "@wso2/oxygen-ui";
-import { Edit, Tag } from "@wso2/oxygen-ui-icons-react";
-import { EditAgentDrawer } from "./EditAgentDrawer";
+import { Box, Divider, Skeleton, Stack } from "@wso2/oxygen-ui";
+import { Tag } from "@wso2/oxygen-ui-icons-react";
 import {
     PageLayout,
     DescriptionCard,
@@ -43,7 +41,6 @@ function AgentOverviewSkeleton() {
 
 export function AgentOverview() {
     const { orgId, agentId, projectId } = useParams();
-    const [editAgentDrawerOpen, setEditAgentDrawerOpen] = useState(false);
     const { data: agent, isLoading: isAgentLoading } = useGetAgent({
         orgName: orgId,
         projName: projectId,
@@ -59,73 +56,50 @@ export function AgentOverview() {
     const { data: kind } = useGetAgentKind({ orgName: orgId ?? "", kindName: agent?.kindName ?? "" });
 
     return (
-        <>
-            <PageLayout
-                variant="card"
-                title={agent?.displayName ?? "Agent"}
-                isLoading={isAgentLoading}
-                titleTail={
-                    <Stack direction="row" spacing={1} alignItems="center">
-                        <AgentTypeChips
-                            provisioning={agent?.provisioning}
-                            agentType={agent?.agentType}
-                            kindName={agent?.kindName}
-                            kindDisplayName={kind?.displayName}
-                        />
-                    </Stack>
-                }
-                meta={
-                    <>
-                        {agent?.labels && Object.keys(agent.labels).length > 0 && (
-                            <PageMetaItem icon={<Tag size={12} />} label="Custom tags">
-                                <LabelChips labels={agent.labels} />
-                            </PageMetaItem>
-                        )}
-                        <Stack
-                            direction="row"
-                            spacing={1}
-                            alignItems="center"
-                            divider={<Divider orientation="vertical" flexItem />}
-                        >
-                            <CreatedMetadata createdAt={agent?.createdAt} />
-                            <CreatedByMetadata createdBy={createdByName} />
-                        </Stack>
-                    </>
-                }
-                actions={
-                    <Button
-                        variant="outlined"
-                        size="small"
-                        startIcon={<Edit size={16} />}
-                        onClick={() => setEditAgentDrawerOpen(true)}
-                        disabled={!agent}
+        <PageLayout
+            variant="card"
+            title={agent?.displayName ?? "Agent"}
+            isLoading={isAgentLoading}
+            titleTail={
+                <Stack direction="row" spacing={1} alignItems="center">
+                    <AgentTypeChips
+                        provisioning={agent?.provisioning}
+                        agentType={agent?.agentType}
+                        kindName={agent?.kindName}
+                        kindDisplayName={kind?.displayName}
+                    />
+                </Stack>
+            }
+            meta={
+                <>
+                    {agent?.labels && Object.keys(agent.labels).length > 0 && (
+                        <PageMetaItem icon={<Tag size={12} />} label="Custom tags">
+                            <LabelChips labels={agent.labels} />
+                        </PageMetaItem>
+                    )}
+                    <Stack
+                        direction="row"
+                        spacing={1}
+                        alignItems="center"
+                        divider={<Divider orientation="vertical" flexItem />}
                     >
-                        Edit Agent
-                    </Button>
-                }
-            >
-                {isAgentLoading ? (
-                    <AgentOverviewSkeleton />
-                ) : (
-                    <Box display="flex" flexDirection="column" gap={2}>
-                        {agent?.description && (
-                            <DescriptionCard content={agent.description} />
-                        )}
-                        {agent?.provisioning?.type === "internal" && <InternalAgentOverview />}
-                        {agent?.provisioning?.type === "external" && <ExternalAgentOverview />}
-                    </Box>
-                )}
-            </PageLayout>
-
-            {agent && (
-                <EditAgentDrawer
-                    open={editAgentDrawerOpen}
-                    onClose={() => setEditAgentDrawerOpen(false)}
-                    agent={agent}
-                    orgId={orgId || "default"}
-                    projectId={projectId || "default"}
-                />
+                        <CreatedMetadata createdAt={agent?.createdAt} />
+                        <CreatedByMetadata createdBy={createdByName} />
+                    </Stack>
+                </>
+            }
+        >
+            {isAgentLoading ? (
+                <AgentOverviewSkeleton />
+            ) : (
+                <Box display="flex" flexDirection="column" gap={2}>
+                    {agent?.description && (
+                        <DescriptionCard content={agent.description} />
+                    )}
+                    {agent?.provisioning?.type === "internal" && <InternalAgentOverview />}
+                    {agent?.provisioning?.type === "external" && <ExternalAgentOverview />}
+                </Box>
             )}
-        </>
+        </PageLayout>
     );
 }

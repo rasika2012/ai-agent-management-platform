@@ -37,7 +37,6 @@ import {
   Plus as Add,
   Trash2 as DeleteOutlineOutlined,
   User,
-  Edit,
 } from "@wso2/oxygen-ui-icons-react";
 
 const { DataGrid: DataGridComponent } = DataGrid;
@@ -68,7 +67,6 @@ import {
   getErrorMessage,
   useConfirmationDialog,
 } from "@agent-management-platform/shared-component";
-import { EditProjectDrawer } from "../ProjectList/EditProjectDrawer";
 
 export function ListPageSkeleton() {
   return (
@@ -118,7 +116,6 @@ export const AgentsList: React.FC = () => {
   const [hoveredAgentId, setHoveredAgentId] = useState<string | null>(null);
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(5);
-  const [editProjectDrawerOpen, setEditProjectDrawerOpen] = useState(false);
   const [addAgentAnchorEl, setAddAgentAnchorEl] = useState<null | HTMLElement>(
     null,
   );
@@ -306,18 +303,6 @@ export const AgentsList: React.FC = () => {
           ) : undefined
         }
         isLoading={isPageLoading}
-        actions={
-          <Button
-            variant="outlined"
-            color="primary"
-            size="small"
-            startIcon={<Edit size={16} />}
-            onClick={() => setEditProjectDrawerOpen(true)}
-            disabled={!project}
-          >
-            Edit Project
-          </Button>
-        }
       >
         {project?.description && (
           <DescriptionCard content={project.description} sx={{ mb: 4 }} />
@@ -576,15 +561,6 @@ export const AgentsList: React.FC = () => {
           </Stack>
         )}
       </PageLayout>
-
-      {project && (
-        <EditProjectDrawer
-          open={editProjectDrawerOpen}
-          onClose={() => setEditProjectDrawerOpen(false)}
-          project={project}
-          orgId={orgId || "default"}
-        />
-      )}
     </>
   );
 };

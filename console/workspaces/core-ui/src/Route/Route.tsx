@@ -47,6 +47,8 @@ import {
   LazyGatewaysOrg,
   LazyThunderInstancesOrg,
   LazySettingsOrg,
+  LazySettingsProject,
+  LazySettingsComponent,
   LazyDeploymentPipelinesOrg,
   LazyEnvironmentsOrg,
   LazyCatalogOrg,
@@ -389,6 +391,17 @@ export function RootRouter() {
               <Route
                 path={
                   relativeRouteMap.children.org.children.projects.children
+                    .settings.path + "/*"
+                }
+                element={
+                  <Suspense fallback={<LoadingFallback />}>
+                    <LazySettingsProject />
+                  </Suspense>
+                }
+              />
+              <Route
+                path={
+                  relativeRouteMap.children.org.children.projects.children
                     .newAgent.path + "/*"
                 }
                 element={
@@ -416,6 +429,17 @@ export function RootRouter() {
                     }
                   />
                 ))}
+                <Route
+                  path={
+                    relativeRouteMap.children.org.children.projects.children
+                      .agents.children.settings.path + "/*"
+                  }
+                  element={
+                    <Suspense fallback={<LoadingFallback />}>
+                      <LazySettingsComponent />
+                    </Suspense>
+                  }
+                />
                 <Route
                   path={
                     relativeRouteMap.children.org.children.projects.children
