@@ -119,17 +119,18 @@ function SecurityRouteElement() {
  * show the previous project's values and write them to the new one.
  */
 function ProjectSettingsRouteElement() {
-  const { projectId } = useParams();
-  return <LazySettingsProject key={projectId} />;
+  const { orgId, projectId } = useParams();
+  return <LazySettingsProject key={`${orgId}/${projectId}`} />;
 }
 
 /**
- * As above, keyed on the project too: agent names are only unique within a
- * project, so the same agentId under a different project must still remount.
+ * As above, keyed on the whole path to the agent: names are only unique within
+ * their parent, so the same agentId under a different project — or the same
+ * projectId under a different org — must still remount.
  */
 function AgentSettingsRouteElement() {
-  const { projectId, agentId } = useParams();
-  return <LazySettingsComponent key={`${projectId}/${agentId}`} />;
+  const { orgId, projectId, agentId } = useParams();
+  return <LazySettingsComponent key={`${orgId}/${projectId}/${agentId}`} />;
 }
 
 /**

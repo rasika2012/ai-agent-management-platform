@@ -210,25 +210,31 @@ export const SettingsProject: React.FC = () => {
   }, [environments]);
 
   // Seeded once; re-seeding on every `project` identity change would wipe
-  // in-progress edits each time the query refetched in the background. It waits
-  // for the pipeline list so a project with none configured can be shown the
-  // first one pre-selected.
+  // in-progress edits each time the query refetched in the background.
   useEffect(() => {
-    if (!project || initial || (canReadPipelines && isPipelinesLoading)) return;
+    if (!project || initial) return;
     const saved: ProjectFormValues = {
       displayName: project.displayName,
       description: project.description || "",
       deploymentPipeline: project.deploymentPipeline || "",
     };
-    // The baseline keeps the project's real (empty) pipeline while the form
-    // shows the default, so that pre-selection reads as an unsaved edit and
-    // can actually be saved.
     setInitial(saved);
-    setFormData({
-      ...saved,
-      deploymentPipeline: saved.deploymentPipeline || pipelines[0]?.name || "",
-    });
-  }, [project, initial, canReadPipelines, isPipelinesLoading, pipelines]);
+    setFormData(saved);
+  }, [project, initial]);
+
+  // Pre-select the first pipeline for a project that has none. It stands apart
+  // from the seed rather than waiting inside it, because the list routinely
+  // lands after the project does and a one-shot seed would then miss it for
+  // good. `initial` deliberately keeps the project's empty value, so the
+  // pre-selection shows up as an unsaved edit that can actually be saved.
+  useEffect(() => {
+    if (pipelines.length === 0) return;
+    setFormData((prev) =>
+      prev && !prev.deploymentPipeline
+        ? { ...prev, deploymentPipeline: pipelines[0].name }
+        : prev,
+    );
+  }, [pipelines]);
 
   const isDirty = useMemo(
     () =>
