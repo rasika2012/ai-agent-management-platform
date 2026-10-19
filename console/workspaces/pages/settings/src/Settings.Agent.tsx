@@ -39,9 +39,12 @@ import {
   useUpdateAgent,
 } from "@agent-management-platform/api-client";
 import {
+  AGENT_UPDATE_SCOPE,
   getErrorMessage,
   LabelsEditor,
   MarkdownEditor,
+  RestrictedAction,
+  useScopeAccess,
   useUnsavedChangesGuard,
 } from "@agent-management-platform/shared-component";
 import {
@@ -81,6 +84,12 @@ export const SettingsAgent: React.FC = () => {
     agentId: string;
   }>();
   const { pushSnackBar } = useSnackBar();
+
+  // Reading an agent and updating one are separate scopes, so this page is
+  // reachable by someone who may only look. The fields stay readable and the
+  // save is refused with its reason, rather than the nav item disappearing.
+  const updateAccess = useScopeAccess(AGENT_UPDATE_SCOPE, "update this agent");
+  const readOnly = !updateAccess.allowed;
 
   const {
     data: agent,
@@ -196,6 +205,9 @@ export const SettingsAgent: React.FC = () => {
     return (
       <form onSubmit={handleSubmit}>
         <Box display="flex" flexDirection="column" gap={2} flexGrow={1}>
+          {readOnly && (
+            <Alert severity="info">{updateAccess.reason}</Alert>
+          )}
           <Card variant="outlined">
             <CardContent
               sx={{ gap: 1, display: "flex", flexDirection: "column" }}
@@ -214,7 +226,7 @@ export const SettingsAgent: React.FC = () => {
                   }
                   error={!!errors.displayName}
                   helperText={errors.displayName}
-                  disabled={isPending}
+                  disabled={isPending || readOnly}
                 />
                 <MarkdownEditor
                   id="description"
@@ -224,7 +236,7 @@ export const SettingsAgent: React.FC = () => {
                   onChange={(value) => handleFieldChange("description", value)}
                   error={!!errors.description}
                   helperText={errors.description}
-                  disabled={isPending}
+                  disabled={isPending || readOnly}
                 />
               </Box>
             </CardContent>
@@ -241,7 +253,7 @@ export const SettingsAgent: React.FC = () => {
                     prev ? { ...prev, labels: value } : prev,
                   )
                 }
-                disabled={isPending}
+                disabled={isPending || readOnly}
               />
             </CardContent>
           </Card>
@@ -255,14 +267,16 @@ export const SettingsAgent: React.FC = () => {
             >
               Discard Changes
             </Button>
-            <Button
-              type="submit"
-              variant="contained"
-              color="primary"
-              disabled={!isValid || isPending || !isDirty}
-            >
-              {isPending ? "Updating..." : "Update Agent"}
-            </Button>
+            <RestrictedAction decision={updateAccess} feature="update-agent">
+              <Button
+                type="submit"
+                variant="contained"
+                color="primary"
+                disabled={!isValid || isPending || !isDirty}
+              >
+                {isPending ? "Updating..." : "Update Agent"}
+              </Button>
+            </RestrictedAction>
           </Box>
         </Box>
       </form>

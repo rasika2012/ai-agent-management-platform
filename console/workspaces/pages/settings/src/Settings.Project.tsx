@@ -28,17 +28,18 @@ import {
   Select,
   Skeleton,
   Stack,
-  TextField,
   Typography,
 } from "@wso2/oxygen-ui";
 import { generatePath, useParams } from "react-router-dom";
 import { z } from "zod";
 import { SlidersHorizontal } from "@wso2/oxygen-ui-icons-react";
 import {
+  TextInput,
   useFormValidation,
   useSnackBar,
 } from "@agent-management-platform/views";
 import {
+  useTokenScopes,
   useGetProject,
   useListDeploymentPipelines,
   useListEnvironments,
@@ -47,6 +48,9 @@ import {
 import {
   getErrorMessage,
   MarkdownEditor,
+  PROJECT_UPDATE_SCOPE,
+  RestrictedAction,
+  useScopeAccess,
   useUnsavedChangesGuard,
 } from "@agent-management-platform/shared-component";
 import {
@@ -110,26 +114,58 @@ interface ProjectFormValues {
   deploymentPipeline: string;
 }
 
-const projectSettingsSchema = z.object({
+const projectFields = {
   displayName: z
     .string()
     .trim()
     .min(3, "Display name must be at least 3 characters")
     .max(100, "Display name must be at most 100 characters"),
   description: z.string().trim().optional(),
+};
+
+const projectSettingsSchema = z.object({
+  ...projectFields,
   deploymentPipeline: z
     .string()
     .trim()
     .min(1, "Deployment pipeline is required"),
 });
 
-/** Project-scope Settings: edits display name, description and deployment pipeline. */
+// Without pipeline read access the field is hidden, so its value is whatever
+// the project already had: carried through untouched rather than demanded.
+const projectSettingsSchemaNoPipeline = z.object({
+  ...projectFields,
+  deploymentPipeline: z.string().trim(),
+});
+
+/**
+ * Project-scope Settings: edits display name, description, and the deployment
+ * pipeline when the caller may read pipelines.
+ */
 export const SettingsProject: React.FC = () => {
   const { orgId, projectId } = useParams<{
     orgId: string;
     projectId: string;
   }>();
   const { pushSnackBar } = useSnackBar();
+
+  // Pipelines are a separate resource: a caller may read the project and not
+  // them. Hiding beats disabling here, since an empty list is indistinguishable
+  // from "none exist" and would otherwise render as "Select a pipeline" over a
+  // project that has one.
+  const { enforced, resolved, scopes } = useTokenScopes();
+  const scopesReady = !enforced || resolved;
+  const canReadPipelines =
+    !enforced || scopes.has("amp:deployment-pipeline:read");
+
+  // Reading a project and updating one are separate scopes, so this page is
+  // reachable by someone who may only look. The fields stay readable and the
+  // save is refused with its reason, rather than the nav item disappearing.
+  const updateAccess = useScopeAccess(
+    PROJECT_UPDATE_SCOPE,
+    "update this project",
+  );
+  const readOnly = !updateAccess.allowed;
 
   const {
     data: project,
@@ -140,8 +176,15 @@ export const SettingsProject: React.FC = () => {
   const [formData, setFormData] = useState<ProjectFormValues | null>(null);
   const [initial, setInitial] = useState<ProjectFormValues | null>(null);
 
+  const schema = useMemo(
+    () =>
+      canReadPipelines
+        ? projectSettingsSchema
+        : projectSettingsSchemaNoPipeline,
+    [canReadPipelines],
+  );
   const { errors, validateField, validateForm, clearErrors, setFieldError } =
-    useFormValidation<ProjectFormValues>(projectSettingsSchema);
+    useFormValidation<ProjectFormValues>(schema);
 
   const { mutate: updateProject, isPending } = useUpdateProject({
     orgName: orgId,
@@ -149,7 +192,9 @@ export const SettingsProject: React.FC = () => {
   });
 
   const { data: pipelinesData, isLoading: isPipelinesLoading } =
-    useListDeploymentPipelines({ orgName: orgId });
+    useListDeploymentPipelines({ orgName: orgId }, undefined, {
+      enabled: canReadPipelines,
+    });
   const pipelines = useMemo(
     () => pipelinesData?.deploymentPipelines ?? [],
     [pipelinesData?.deploymentPipelines],
@@ -166,19 +211,24 @@ export const SettingsProject: React.FC = () => {
 
   // Seeded once; re-seeding on every `project` identity change would wipe
   // in-progress edits each time the query refetched in the background. It waits
-  // for the pipeline list so a project with none configured can default to the
-  // first one without that default counting as an unsaved edit.
+  // for the pipeline list so a project with none configured can be shown the
+  // first one pre-selected.
   useEffect(() => {
-    if (!project || initial || isPipelinesLoading) return;
-    const seed: ProjectFormValues = {
+    if (!project || initial || (canReadPipelines && isPipelinesLoading)) return;
+    const saved: ProjectFormValues = {
       displayName: project.displayName,
       description: project.description || "",
-      deploymentPipeline:
-        project.deploymentPipeline || pipelines[0]?.name || "",
+      deploymentPipeline: project.deploymentPipeline || "",
     };
-    setFormData(seed);
-    setInitial(seed);
-  }, [project, initial, isPipelinesLoading, pipelines]);
+    // The baseline keeps the project's real (empty) pipeline while the form
+    // shows the default, so that pre-selection reads as an unsaved edit and
+    // can actually be saved.
+    setInitial(saved);
+    setFormData({
+      ...saved,
+      deploymentPipeline: saved.deploymentPipeline || pipelines[0]?.name || "",
+    });
+  }, [project, initial, canReadPipelines, isPipelinesLoading, pipelines]);
 
   const isDirty = useMemo(
     () =>
@@ -245,7 +295,7 @@ export const SettingsProject: React.FC = () => {
       );
     }
 
-    if (isLoading || !formData) {
+    if (isLoading || !scopesReady || !formData) {
       return (
         <Stack spacing={2}>
           <Skeleton variant="rounded" height={56} />
@@ -258,100 +308,105 @@ export const SettingsProject: React.FC = () => {
     return (
       <form onSubmit={handleSubmit}>
         <Box display="flex" flexDirection="column" gap={2} flexGrow={1}>
+          {readOnly && (
+            <Alert severity="info">{updateAccess.reason}</Alert>
+          )}
           <Card variant="outlined">
             <CardContent
               sx={{ gap: 1, display: "flex", flexDirection: "column" }}
             >
               <Typography variant="h5">Project Details</Typography>
               <Box display="flex" flexDirection="column" gap={1}>
-                <Form.ElementWrapper label="Name" name="displayName">
-                  <TextField
-                    slotProps={{ htmlInput: { maxLength: INPUT_LIMITS.NAME } }}
-                    id="displayName"
-                    placeholder="e.g., Customer Support Platform"
-                    size="small"
-                    fullWidth
-                    disabled={isPending}
-                    value={formData.displayName}
-                    onChange={(e) =>
-                      handleFieldChange("displayName", e.target.value)
-                    }
-                    error={!!errors.displayName}
-                    helperText={errors.displayName}
-                  />
-                </Form.ElementWrapper>
+                <TextInput
+                  maxLength={INPUT_LIMITS.NAME}
+                  placeholder="e.g., Customer Support Platform"
+                  label="Name"
+                  fullWidth
+                  size="small"
+                  value={formData.displayName}
+                  onChange={(e) =>
+                    handleFieldChange("displayName", e.target.value)
+                  }
+                  error={!!errors.displayName}
+                  helperText={errors.displayName}
+                  disabled={isPending || readOnly}
+                />
                 <MarkdownEditor
                   id="description"
                   label="Description (optional)"
                   placeholder="Short description of this project. Markdown is supported."
-                  disabled={isPending}
+                  disabled={isPending || readOnly}
                   value={formData.description || ""}
                   onChange={(value) => handleFieldChange("description", value)}
                   error={!!errors.description}
                   helperText={errors.description}
                 />
-                <Form.ElementWrapper
-                  label="Deployment Pipeline"
-                  name="deploymentPipeline"
-                >
-                  <Select
-                    id="deploymentPipeline"
-                    value={formData.deploymentPipeline}
-                    onChange={(e) =>
-                      handleFieldChange(
-                        "deploymentPipeline",
-                        e.target.value as string,
-                      )
-                    }
-                    error={!!errors.deploymentPipeline}
-                    disabled={isPipelinesLoading || isPending}
-                    displayEmpty
-                    renderValue={(value) => {
-                      const selected = pipelines.find((p) => p.name === value);
-                      if (!selected) {
-                        return (
-                          <Typography variant="body2" color="text.disabled">
-                            Select a pipeline
-                          </Typography>
-                        );
-                      }
-                      return (
-                        <PipelineLabel
-                          pipeline={selected}
-                          envDisplayNameMap={envDisplayNameMap}
-                          direction="row"
-                        />
-                      );
-                    }}
-                    fullWidth
-                    size="small"
+                {canReadPipelines && (
+                  <Form.ElementWrapper
+                    label="Deployment Pipeline"
+                    name="deploymentPipeline"
                   >
-                    {isPipelinesLoading && (
-                      <MenuItem value="" disabled>
-                        <Stack direction="row" alignItems="center" gap={1}>
-                          <CircularProgress size={12} />
-                          <Typography variant="caption">
-                            Loading pipelines...
-                          </Typography>
-                        </Stack>
-                      </MenuItem>
-                    )}
-                    {!isPipelinesLoading && pipelines.length === 0 && (
-                      <MenuItem value="" disabled>
-                        No deployment pipelines available
-                      </MenuItem>
-                    )}
-                    {pipelines.map((p) => (
-                      <MenuItem key={p.name} value={p.name}>
-                        <PipelineLabel
-                          pipeline={p}
-                          envDisplayNameMap={envDisplayNameMap}
-                          direction="column"
-                        />
-                      </MenuItem>
-                    ))}
-                  </Select>
-                </Form.ElementWrapper>
+                    <Select
+                      id="deploymentPipeline"
+                      value={formData.deploymentPipeline}
+                      onChange={(e) =>
+                        handleFieldChange(
+                          "deploymentPipeline",
+                          e.target.value as string,
+                        )
+                      }
+                      error={!!errors.deploymentPipeline}
+                      disabled={isPipelinesLoading || isPending || readOnly}
+                      displayEmpty
+                      renderValue={(value) => {
+                        const selected = pipelines.find(
+                          (p) => p.name === value,
+                        );
+                        if (!selected) {
+                          return (
+                            <Typography variant="body2" color="text.disabled">
+                              Select a pipeline
+                            </Typography>
+                          );
+                        }
+                        return (
+                          <PipelineLabel
+                            pipeline={selected}
+                            envDisplayNameMap={envDisplayNameMap}
+                            direction="row"
+                          />
+                        );
+                      }}
+                      fullWidth
+                      size="small"
+                    >
+                      {isPipelinesLoading && (
+                        <MenuItem value="" disabled>
+                          <Stack direction="row" alignItems="center" gap={1}>
+                            <CircularProgress size={12} />
+                            <Typography variant="caption">
+                              Loading pipelines...
+                            </Typography>
+                          </Stack>
+                        </MenuItem>
+                      )}
+                      {!isPipelinesLoading && pipelines.length === 0 && (
+                        <MenuItem value="" disabled>
+                          No deployment pipelines available
+                        </MenuItem>
+                      )}
+                      {pipelines.map((p) => (
+                        <MenuItem key={p.name} value={p.name}>
+                          <PipelineLabel
+                            pipeline={p}
+                            envDisplayNameMap={envDisplayNameMap}
+                            direction="column"
+                          />
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </Form.ElementWrapper>
+                )}
               </Box>
             </CardContent>
           </Card>
@@ -365,14 +420,16 @@ export const SettingsProject: React.FC = () => {
             >
               Discard Changes
             </Button>
-            <Button
-              type="submit"
-              variant="contained"
-              color="primary"
-              disabled={!isValid || isPending || !isDirty}
-            >
-              {isPending ? "Updating..." : "Update Project"}
-            </Button>
+            <RestrictedAction decision={updateAccess} feature="update-project">
+              <Button
+                type="submit"
+                variant="contained"
+                color="primary"
+                disabled={!isValid || isPending || !isDirty}
+              >
+                {isPending ? "Updating..." : "Update Project"}
+              </Button>
+            </RestrictedAction>
           </Box>
         </Box>
       </form>

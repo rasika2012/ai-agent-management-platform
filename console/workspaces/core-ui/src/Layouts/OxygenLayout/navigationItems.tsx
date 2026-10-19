@@ -24,6 +24,7 @@ import {
   Hammer,
   FlaskConical,
   Workflow,
+  Wrench,
   Logs,
   Rocket,
   Code,
@@ -280,7 +281,7 @@ export function useNavigationItems(): Array<
           {
             label: "Configure",
             type: "item",
-            icon: <Settings size={20} />,
+            icon: <Wrench size={20} />,
             isActive: !!matchPath(
               absoluteRouteMap.children.org.children.projects.children.agents
                 .children.configure.wildPath,
@@ -394,7 +395,7 @@ export function useNavigationItems(): Array<
           {
             label: "Configure",
             type: "item",
-            icon: <Settings size={20} />,
+            icon: <Wrench size={20} />,
             isActive: !!matchPath(
               agentsChildren.configure?.wildPath ?? "",
               pathname,
@@ -596,7 +597,7 @@ export function useNavigationItems(): Array<
           {
             label: "Configure",
             type: "item",
-            icon: <Settings size={20} />,
+            icon: <Wrench size={20} />,
             isActive: !!matchPath(
               agentsChildren.configure?.wildPath ?? "",
               pathname,
