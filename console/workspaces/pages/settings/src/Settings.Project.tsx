@@ -228,13 +228,13 @@ export const SettingsProject: React.FC = () => {
   // good. `initial` deliberately keeps the project's empty value, so the
   // pre-selection shows up as an unsaved edit that can actually be saved.
   useEffect(() => {
-    if (pipelines.length === 0) return;
+    if (readOnly || pipelines.length === 0) return;
     setFormData((prev) =>
       prev && !prev.deploymentPipeline
         ? { ...prev, deploymentPipeline: pipelines[0].name }
         : prev,
     );
-  }, [pipelines]);
+  }, [pipelines, readOnly]);
 
   const isDirty = useMemo(
     () =>
@@ -243,7 +243,7 @@ export const SettingsProject: React.FC = () => {
       JSON.stringify(formData) !== JSON.stringify(initial),
     [formData, initial],
   );
-  useUnsavedChangesGuard(isDirty);
+  useUnsavedChangesGuard(isDirty && !readOnly);
 
   const handleFieldChange = useCallback(
     (field: keyof ProjectFormValues, value: string) => {
