@@ -112,11 +112,12 @@ export function MCPProxyConnectionTab({
   }, [config]);
 
   useEffect(() => {
-    if (!selectedEndpointId) return;
+    // Wait for config too, or the form seeds empty and reads as dirty.
+    if (!selectedEndpointId || !config) return;
     if (initializedEnvIdRef.current === selectedEndpointId) return;
     initializedEnvIdRef.current = selectedEndpointId;
     resetFromConfig();
-  }, [selectedEndpointId, resetFromConfig]);
+  }, [selectedEndpointId, config, resetFromConfig]);
 
   const validateEndpoint = useCallback((value: string): string | null => {
     const err = validateEndpointUrl(value, {
@@ -146,10 +147,12 @@ export function MCPProxyConnectionTab({
     return err;
   }, []);
 
+  // With no stored credential the field seeds empty, so empty isn't a change.
   const credentialChanged =
     authEnabled &&
     !isCredentialMasked &&
-    credentialValue.trim() !== MASKED_CREDENTIAL_VALUE;
+    credentialValue.trim() !== MASKED_CREDENTIAL_VALUE &&
+    (hasStoredCredential || credentialValue.trim() !== "");
   const effectiveAuthHeader = authEnabled ? authHeader.trim() : "";
 
   const isDirty = useMemo(() => {
