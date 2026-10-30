@@ -15,13 +15,14 @@
  * under the License.
  */
 
-import React, { useState } from "react";
+import React from "react";
 import { PageLayout } from "@agent-management-platform/views";
 import {
   generatePath,
   Navigate,
   Route,
   Routes,
+  useNavigate,
   useParams,
 } from "react-router-dom";
 import {
@@ -30,60 +31,45 @@ import {
 } from "@agent-management-platform/types";
 import { AIGatewaysTable } from "./subComponents/AIGatewaysTable";
 import { ViewGateway } from "./subComponents/ViewGateway";
-import { EditGatewayDrawer } from "./subComponents/EditGatewayDrawer";
+import { EditGateway } from "./subComponents/EditGateway";
 
 export const GatewaysOrganization: React.FC = () => {
   const { orgId } = useParams<{ orgId: string }>();
-  const [editDrawerOpen, setEditDrawerOpen] = useState(false);
-  const [gatewayToEdit, setGatewayToEdit] = useState<GatewayResponse | null>(
-    null,
-  );
+  const navigate = useNavigate();
 
   const handleEditGateway = (gateway: GatewayResponse) => {
-    setGatewayToEdit(gateway);
-    setEditDrawerOpen(true);
-  };
-
-  const handleEditDrawerClose = () => {
-    setEditDrawerOpen(false);
-    setGatewayToEdit(null);
+    navigate(
+      generatePath(absoluteRouteMap.children.org.children.gateways.children.edit.path, {
+        orgId: orgId ?? "",
+        gatewayId: gateway.uuid,
+      }),
+    );
   };
 
   return (
-    <>
-      <Routes>
-        <Route
-          index
-          element={
-            <PageLayout title="Gateways" disableIcon>
-              <AIGatewaysTable onEditGateway={handleEditGateway} />
-            </PageLayout>
-          }
-        />
-        <Route path="view/:gatewayId" element={<ViewGateway />} />
-        <Route
-          path="*"
-          element={
-            <Navigate
-              to={generatePath(
-                absoluteRouteMap.children.org.children.gateways.path,
-                { orgId },
-              )}
-            />
-          }
-        />
-      </Routes>
-
-      {gatewayToEdit && (
-        <EditGatewayDrawer
-          open={editDrawerOpen}
-          onClose={handleEditDrawerClose}
-          gateway={gatewayToEdit}
-          orgId={orgId ?? ""}
-          onSuccess={handleEditDrawerClose}
-        />
-      )}
-    </>
+    <Routes>
+      <Route
+        index
+        element={
+          <PageLayout title="Gateways" disableIcon>
+            <AIGatewaysTable onEditGateway={handleEditGateway} />
+          </PageLayout>
+        }
+      />
+      <Route path="view/:gatewayId" element={<ViewGateway />} />
+      <Route path="edit/:gatewayId" element={<EditGateway />} />
+      <Route
+        path="*"
+        element={
+          <Navigate
+            to={generatePath(
+              absoluteRouteMap.children.org.children.gateways.path,
+              { orgId },
+            )}
+          />
+        }
+      />
+    </Routes>
   );
 };
 
