@@ -361,7 +361,6 @@ export function ViewMCPProxy() {
   return (
     <>
       <PageLayout
-        variant="card"
         title={displayName}
         backHref={backHref}
         backLabel="Back to MCP servers"
