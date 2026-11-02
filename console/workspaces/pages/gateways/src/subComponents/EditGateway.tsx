@@ -182,7 +182,7 @@ function EditGatewayForm({ gateway, orgId, listHref }: EditGatewayFormProps) {
           </Grid>
         </Form.Stack>
 
-        <Box display="flex" justifyContent="flex-end" gap={1} mt={2}>
+        <Box display="flex" gap={1} mt={2}>
           <Button
             variant="outlined"
             color="inherit"
