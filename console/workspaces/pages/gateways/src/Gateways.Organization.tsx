@@ -22,29 +22,15 @@ import {
   Navigate,
   Route,
   Routes,
-  useNavigate,
   useParams,
 } from "react-router-dom";
-import {
-  absoluteRouteMap,
-  type GatewayResponse,
-} from "@agent-management-platform/types";
+import { absoluteRouteMap } from "@agent-management-platform/types";
 import { AIGatewaysTable } from "./subComponents/AIGatewaysTable";
 import { ViewGateway } from "./subComponents/ViewGateway";
 import { EditGateway } from "./subComponents/EditGateway";
 
 export const GatewaysOrganization: React.FC = () => {
   const { orgId } = useParams<{ orgId: string }>();
-  const navigate = useNavigate();
-
-  const handleEditGateway = (gateway: GatewayResponse) => {
-    navigate(
-      generatePath(absoluteRouteMap.children.org.children.gateways.children.edit.path, {
-        orgId: orgId ?? "",
-        gatewayId: gateway.uuid,
-      }),
-    );
-  };
 
   return (
     <Routes>
@@ -52,7 +38,7 @@ export const GatewaysOrganization: React.FC = () => {
         index
         element={
           <PageLayout title="Gateways" disableIcon>
-            <AIGatewaysTable onEditGateway={handleEditGateway} />
+            <AIGatewaysTable />
           </PageLayout>
         }
       />
