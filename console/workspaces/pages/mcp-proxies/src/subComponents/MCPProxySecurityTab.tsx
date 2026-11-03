@@ -22,6 +22,7 @@ import {
   useUpdateMCPProxyScope,
 } from "@agent-management-platform/api-client";
 import { useConfirmationDialog } from "@agent-management-platform/shared-component";
+import { TextInput } from "@agent-management-platform/views";
 import {
   type APIKeyLocation,
   type Environment,
@@ -36,13 +37,10 @@ import {
   Button,
   Chip,
   Collapse,
-  FormControl,
-  FormLabel,
   Grid,
   IconButton,
   ListingTable,
   MenuItem,
-  Select,
   Skeleton,
   Stack,
   Tab,
@@ -550,25 +548,25 @@ export function MCPProxySecurityTab({
     <Stack spacing={2}>
       <Typography variant="h6">Authentication</Typography>
 
-      <Grid container spacing={3}>
-        <Grid size={{ xs: 12, md: 5 }}>
-          <FormControl fullWidth disabled={isDisabled}>
-            <FormLabel>Method</FormLabel>
-            <Select
+      <Grid container spacing={2}>
+        <Grid size={{ xs: 12, md: 6, xl: 4 }}>
+          <TextInput
+            select
+            label="Method"
+            disabled={isDisabled}
               size="small"
               displayEmpty
               value={authenticationType || ""}
               onChange={(e) =>
                 handleAuthTypeChange((e.target.value as AuthenticationType) || "")
               }
-            >
+          >
               {AUTHENTICATION_TYPE_OPTIONS.map((type) => (
                 <MenuItem key={type || "none"} value={type}>
                   {getAuthenticationTypeLabel(type)}
                 </MenuItem>
               ))}
-            </Select>
-          </FormControl>
+          </TextInput>
         </Grid>
       </Grid>
 
@@ -729,49 +727,43 @@ export function MCPProxySecurityTab({
       )}
 
       {authenticationType === "apiKey" && (
-        <Grid container spacing={3}>
-          <Grid size={{ xs: 12, md: 5 }}>
-            <FormControl fullWidth disabled={isDisabled}>
-              <FormLabel>Key Location</FormLabel>
-              <Select
+        <Grid container spacing={2}>
+          <Grid size={{ xs: 12, md: 6, xl: 4 }}>
+            <TextInput
+              select
+              label="Key Location"
+              disabled={isDisabled}
                 size="small"
                 value={keyIn}
                 onChange={(e) => setKeyIn(e.target.value as APIKeyLocation)}
-              >
+            >
                 {KEY_LOCATION_OPTIONS.map((opt) => (
                   <MenuItem key={opt.value} value={opt.value}>
                     {opt.label}
                   </MenuItem>
                 ))}
-              </Select>
-            </FormControl>
+            </TextInput>
           </Grid>
-          <Grid size={{ xs: 12, md: 5 }}>
-            <FormControl
-              fullWidth
+          <Grid size={{ xs: 12, md: 6, xl: 4 }}>
+            <TextInput
+              label={keyIn === "query" ? "Query Param Key" : "Header Key"}
+              maxLength={INPUT_LIMITS.KEY}
+              hideCharacterCount={(keyValue?.length ?? 0) < INPUT_LIMITS.KEY}
               disabled={isDisabled}
+              size="small"
+              value={keyValue}
+              onChange={(e) => {
+                setKeyValue(e.target.value);
+                if (fieldErrors.keyValue) setFieldErrors({});
+              }}
               error={!!fieldErrors.keyValue}
-            >
-              <FormLabel>
-                {keyIn === "query" ? "Query Param Key" : "Header Key"}
-              </FormLabel>
-              <TextField
-                slotProps={{ htmlInput: { maxLength: INPUT_LIMITS.KEY } }}
-                size="small"
-                value={keyValue}
-                onChange={(e) => {
-                  setKeyValue(e.target.value);
-                  if (fieldErrors.keyValue) setFieldErrors({});
-                }}
-                error={!!fieldErrors.keyValue}
-                helperText={fieldErrors.keyValue}
-                sx={{
-                  "& .MuiInputBase-input": {
-                    fontFamily: "monospace",
-                  },
-                }}
-              />
-            </FormControl>
+              helperText={fieldErrors.keyValue}
+              sx={{
+                "& .MuiInputBase-input": {
+                  fontFamily: "monospace",
+                },
+              }}
+            />
           </Grid>
         </Grid>
       )}
