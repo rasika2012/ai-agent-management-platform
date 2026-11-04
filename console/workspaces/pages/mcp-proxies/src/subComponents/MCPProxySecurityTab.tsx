@@ -554,18 +554,17 @@ export function MCPProxySecurityTab({
             select
             label="Method"
             disabled={isDisabled}
-              size="small"
-              displayEmpty
-              value={authenticationType || ""}
-              onChange={(e) =>
-                handleAuthTypeChange((e.target.value as AuthenticationType) || "")
-              }
+            size="small"
+            value={authenticationType || ""}
+            onChange={(e) =>
+              handleAuthTypeChange((e.target.value as AuthenticationType) || "")
+            }
           >
-              {AUTHENTICATION_TYPE_OPTIONS.map((type) => (
-                <MenuItem key={type || "none"} value={type}>
-                  {getAuthenticationTypeLabel(type)}
-                </MenuItem>
-              ))}
+            {AUTHENTICATION_TYPE_OPTIONS.map((type) => (
+              <MenuItem key={type || "none"} value={type}>
+                {getAuthenticationTypeLabel(type)}
+              </MenuItem>
+            ))}
           </TextInput>
         </Grid>
       </Grid>
